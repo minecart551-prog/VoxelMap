@@ -13,6 +13,8 @@ public class Waypoint implements Serializable, Comparable<Waypoint> {
     private static final long serialVersionUID = 8136790917447997951L;
     public String name;
     public String imageSuffix;
+    /** Optional item ID supplied by an integration, e.g. minecraft:diamond. */
+    public String itemIconId;
     public String world;
     public final TreeSet<DimensionContainer> dimensions;
     public int x;
@@ -35,6 +37,7 @@ public class Waypoint implements Serializable, Comparable<Waypoint> {
         this.green = green;
         this.blue = blue;
         this.imageSuffix = suffix.toLowerCase(Locale.ROOT);
+        this.itemIconId = ItemWaypointIcon.decode(this.imageSuffix);
         this.world = world;
         this.dimensions = dimensions;
     }

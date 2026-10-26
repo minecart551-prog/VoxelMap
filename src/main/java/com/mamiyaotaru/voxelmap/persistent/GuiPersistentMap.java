@@ -21,6 +21,7 @@ import com.mamiyaotaru.voxelmap.util.CommandUtils;
 import com.mamiyaotaru.voxelmap.util.DimensionContainer;
 import com.mamiyaotaru.voxelmap.util.GameVariableAccessShim;
 import com.mamiyaotaru.voxelmap.util.ImageUtils;
+import com.mamiyaotaru.voxelmap.util.ItemWaypointRenderer;
 import com.mamiyaotaru.voxelmap.util.OpenGL;
 import com.mamiyaotaru.voxelmap.util.Waypoint;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -44,6 +45,7 @@ import net.minecraft.client.util.InputUtil;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
+import net.minecraft.item.ItemStack;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.RotationAxis;
@@ -869,7 +871,8 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             if (this.backGroundImageInfo != null && this.backGroundImageInfo.isInRange((int) ptX, (int) ptZ) || this.persistentMap.isRegionLoaded((int) ptX, (int) ptZ)) {
                 ptX += 0.5F;
                 ptZ += 0.5F;
-                boolean hover = cursorCoordX > ptX - 18.0F * this.guiToMap / this.guiToDirectMouse && cursorCoordX < ptX + 18.0F * this.guiToMap / this.guiToDirectMouse && cursorCoordZ > ptZ - 18.0F * this.guiToMap / this.guiToDirectMouse && cursorCoordZ < ptZ + 18.0F * this.guiToMap / this.guiToDirectMouse;
+                float hoverRadius = pt.itemIconId == null ? 22.0F : 18.0F;
+                boolean hover = cursorCoordX > ptX - hoverRadius * this.guiToMap / this.guiToDirectMouse && cursorCoordX < ptX + hoverRadius * this.guiToMap / this.guiToDirectMouse && cursorCoordZ > ptZ - hoverRadius * this.guiToMap / this.guiToDirectMouse && cursorCoordZ < ptZ + hoverRadius * this.guiToMap / this.guiToDirectMouse;
                 boolean target = false;
                 RenderSystem.setShader(GameRenderer::getPositionTexProgram);
                 TextureAtlas atlas = VoxelConstants.getVoxelMapInstance().getWaypointManager().getTextureAtlas();
@@ -895,13 +898,20 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                     RenderSystem.applyModelViewMatrix();
                 }
 
-                this.drawTexturedModalRect(-16.0F / this.scScale + ptX * this.mapToGui, -16.0F / this.scScale + ptZ * this.mapToGui, icon, 32.0F / this.scScale, 32.0F / this.scScale);
+                ItemStack itemIcon = ItemWaypointRenderer.resolve(pt);
+                if (itemIcon.isEmpty()) {
+                    this.drawTexturedModalRect(-20.0F / this.scScale + ptX * this.mapToGui, -20.0F / this.scScale + ptZ * this.mapToGui, icon, 40.0F / this.scScale, 40.0F / this.scScale);
+                } else {
+                    ItemWaypointRenderer.draw(drawContext, itemIcon, ptX * this.mapToGui, ptZ * this.mapToGui,
+                            32.0F / this.scScale * mapOptions.waypointItemIconScale);
+                }
                 if (this.oldNorth) {
                     matrixStack.pop();
                     RenderSystem.applyModelViewMatrix();
                 }
 
-                if (mapOptions.biomeOverlay == 0 && this.options.showWaypointNames || target || hover) {
+                if (pt.itemIconId != null
+                        || mapOptions.biomeOverlay == 0 && this.options.showWaypointNames || target || hover) {
                     float fontScale = 2.0F / this.scScale;
                     int m = this.chkLen(name) / 2;
                     matrixStack.push();
@@ -913,7 +923,8 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                         RenderSystem.applyModelViewMatrix();
                     }
 
-                    this.write(drawContext, name, ptX * this.mapToGui / fontScale - m, ptZ * this.mapToGui / fontScale + 16.0F / this.scScale / fontScale, !pt.enabled && !target && !hover ? 1442840575 : 16777215);
+                    float nameOffset = pt.itemIconId == null ? 20.0F : 16.0F;
+                    this.write(drawContext, name, ptX * this.mapToGui / fontScale - m, ptZ * this.mapToGui / fontScale + nameOffset / this.scScale / fontScale, !pt.enabled && !target && !hover ? 1442840575 : 16777215);
                     matrixStack.pop();
                     RenderSystem.applyModelViewMatrix();
                     OpenGL.glEnable(OpenGL.GL11_GL_BLEND);
@@ -1031,10 +1042,13 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         Waypoint hovered = this.getHovered(cursorCoordX, cursorCoordZ);
         Popup.PopupEntry entry;
         if (hovered != null && this.waypointManager.getWaypoints().contains(hovered)) {
-            entry = new Popup.PopupEntry(I18n.translate("selectServer.edit"), 4, true, true);
-            entries.add(entry);
-            entry = new Popup.PopupEntry(I18n.translate("selectServer.delete"), 5, true, true);
-            entries.add(entry);
+            boolean canManage = hovered.itemIconId == null || VoxelConstants.getPlayer().hasPermissionLevel(2);
+            if (canManage) {
+                entry = new Popup.PopupEntry(I18n.translate("selectServer.edit"), 4, true, true);
+                entries.add(entry);
+                entry = new Popup.PopupEntry(I18n.translate("selectServer.delete"), 5, true, true);
+                entries.add(entry);
+            }
             entry = new Popup.PopupEntry(I18n.translate(hovered != this.waypointManager.getHighlightedWaypoint() ? "minimap.waypoints.highlight" : "minimap.waypoints.removehighlight"), 1, true, true);
         } else {
             entry = new Popup.PopupEntry(I18n.translate("minimap.waypoints.newwaypoint"), 0, true, true);
@@ -1164,7 +1178,8 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                 }
             }
             case 5 -> {
-                if (hovered != null) {
+                if (hovered != null && (hovered.itemIconId == null
+                        || VoxelConstants.getPlayer().hasPermissionLevel(2))) {
                     this.deleteClicked = true;
                     this.selectedWaypoint = hovered;
                     Text title = Text.translatable("minimap.waypoints.deleteconfirm");

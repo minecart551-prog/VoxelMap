@@ -17,6 +17,7 @@ import com.mamiyaotaru.voxelmap.util.GameVariableAccessShim;
 import com.mamiyaotaru.voxelmap.util.LayoutVariables;
 import com.mamiyaotaru.voxelmap.util.MapChunkCache;
 import com.mamiyaotaru.voxelmap.util.MapUtils;
+import com.mamiyaotaru.voxelmap.util.ItemWaypointRenderer;
 import com.mamiyaotaru.voxelmap.util.MutableBlockPos;
 import com.mamiyaotaru.voxelmap.util.MutableNativeImageBackedTexture;
 import com.mamiyaotaru.voxelmap.util.OpenGL;
@@ -56,6 +57,7 @@ import net.minecraft.entity.effect.StatusEffectInstance;
 import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.fluid.FluidState;
 import net.minecraft.fluid.Fluids;
+import net.minecraft.item.ItemStack;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
@@ -680,7 +682,7 @@ public class Map implements Runnable, IChangeObserver {
             if (this.fullscreenMap) {
                 this.renderMapFull(drawContext, this.scWidth, this.scHeight);
             } else {
-                this.renderMap(modelViewMatrixStack, mapX, mapY, scScale);
+                this.renderMap(drawContext, modelViewMatrixStack, mapX, mapY, scScale);
             }
 
             OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
@@ -1538,7 +1540,7 @@ public class Map implements Runnable, IChangeObserver {
         return i3;
     }
 
-    private void renderMap(MatrixStack matrixStack, int x, int y, int scScale) {
+    private void renderMap(DrawContext drawContext, MatrixStack matrixStack, int x, int y, int scScale) {
         float scale = 1.0F;
         if (this.options.squareMap && this.options.rotates) {
             scale = 1.4142F;
@@ -1646,19 +1648,19 @@ public class Map implements Runnable, IChangeObserver {
             if (pt.isActive() || pt == highlightedPoint) {
                 double distanceSq = pt.getDistanceSqToEntity(VoxelConstants.getMinecraft().getCameraEntity());
                 if (distanceSq < (this.options.maxWaypointDisplayDistance * this.options.maxWaypointDisplayDistance) || this.options.maxWaypointDisplayDistance < 0 || pt == highlightedPoint) {
-                    this.drawWaypoint(matrixStack, pt, textureAtlas, x, y, scScale, lastXDouble, lastZDouble, null, null, null, null);
+                    this.drawWaypoint(drawContext, matrixStack, pt, textureAtlas, x, y, scScale, lastXDouble, lastZDouble, null, null, null, null);
                 }
             }
         }
 
         if (highlightedPoint != null) {
-            this.drawWaypoint(matrixStack, highlightedPoint, textureAtlas, x, y, scScale, lastXDouble, lastZDouble, textureAtlas.getAtlasSprite("voxelmap:images/waypoints/target.png"), 1.0F, 0.0F, 0.0F);
+            this.drawWaypoint(drawContext, matrixStack, highlightedPoint, textureAtlas, x, y, scScale, lastXDouble, lastZDouble, textureAtlas.getAtlasSprite("voxelmap:images/waypoints/target.png"), 1.0F, 0.0F, 0.0F);
         }
 
         OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
     }
 
-    private void drawWaypoint(MatrixStack matrixStack, Waypoint pt, TextureAtlas textureAtlas, int x, int y, int scScale, double lastXDouble, double lastZDouble, Sprite icon, Float r, Float g, Float b) {
+    private void drawWaypoint(DrawContext drawContext, MatrixStack matrixStack, Waypoint pt, TextureAtlas textureAtlas, int x, int y, int scScale, double lastXDouble, double lastZDouble, Sprite icon, Float r, Float g, Float b) {
         boolean uprightIcon = icon != null;
         if (r == null) {
             r = pt.red;
@@ -1700,6 +1702,20 @@ public class Map implements Runnable, IChangeObserver {
         }
 
         boolean target = false;
+        ItemStack itemIcon = ItemWaypointRenderer.resolve(pt);
+        if (!itemIcon.isEmpty() && icon == null) {
+            MatrixStack itemMatrices = drawContext.getMatrices();
+            itemMatrices.push();
+            itemMatrices.translate(x, y, 0.0F);
+            itemMatrices.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-locate));
+            itemMatrices.translate(0.0F, (float) -hypot, 0.0F);
+            itemMatrices.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(locate));
+            itemMatrices.translate(-x, -y, 0.0F);
+            ItemWaypointRenderer.draw(drawContext, itemIcon, x, y,
+                    5.6F * this.options.waypointItemIconScale);
+            itemMatrices.pop();
+            return;
+        }
         if (far) {
             try {
                 if (icon == null) {

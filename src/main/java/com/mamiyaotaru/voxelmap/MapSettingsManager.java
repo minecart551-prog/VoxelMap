@@ -50,8 +50,9 @@ public class MapSettingsManager implements ISettingsManager {
     private boolean preToggleSigns = true;
     public int deathpoints = 1;
     public int maxWaypointDisplayDistance = 1000;
+    public float waypointItemIconScale = 1.0F;
     protected boolean welcome = true;
-    public int zoom = 2;
+    public int zoom = 4;
     public int sizeModifier = 1;
     public int mapCorner = 1;
     public Boolean cavesAllowed = true;
@@ -112,6 +113,7 @@ public class MapSettingsManager implements ISettingsManager {
                         case "Waypoint Signs" -> this.showWaypoints = Boolean.parseBoolean(curLine[1]);
                         case "Deathpoints" -> this.deathpoints = Math.max(0, Math.min(2, Integer.parseInt(curLine[1])));
                         case "Waypoint Max Distance" -> this.maxWaypointDisplayDistance = Math.max(-1, Math.min(10000, Integer.parseInt(curLine[1])));
+                        case "Waypoint Item Icon Scale" -> this.waypointItemIconScale = Math.max(0.5F, Math.min(3.0F, Float.parseFloat(curLine[1])));
                         case "Waypoint Sort By" -> this.sort = Math.max(1, Math.min(4, Integer.parseInt(curLine[1])));
                         case "Welcome Message" -> this.welcome = Boolean.parseBoolean(curLine[1]);
                         case "Real Time Torch Flicker" -> this.realTimeTorches = Boolean.parseBoolean(curLine[1]);
@@ -182,6 +184,7 @@ public class MapSettingsManager implements ISettingsManager {
             out.println("Waypoint Signs:" + this.showWaypoints);
             out.println("Deathpoints:" + this.deathpoints);
             out.println("Waypoint Max Distance:" + this.maxWaypointDisplayDistance);
+            out.println("Waypoint Item Icon Scale:" + this.waypointItemIconScale);
             out.println("Waypoint Sort By:" + this.sort);
             out.println("Welcome Message:" + this.welcome);
             out.println("Map Corner:" + this.mapCorner);

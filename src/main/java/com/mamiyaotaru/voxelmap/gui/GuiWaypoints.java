@@ -82,7 +82,7 @@ public class GuiWaypoints extends GuiScreenMinimap implements IGuiWaypoints {
         this.filter.setFocused(true);
         boolean isSomethingSelected = this.selectedWaypoint != null;
         this.buttonEdit.active = isSomethingSelected;
-        this.buttonDelete.active = isSomethingSelected;
+        this.buttonDelete.active = isSomethingSelected && canManageSelectedWaypoint();
         this.buttonHighlight.active = isSomethingSelected;
         this.buttonShare.active = isSomethingSelected;
         this.buttonTeleport.active = isSomethingSelected && this.canTeleport();
@@ -121,6 +121,9 @@ public class GuiWaypoints extends GuiScreenMinimap implements IGuiWaypoints {
     }
 
     private void deleteClicked() {
+        if (!canManageSelectedWaypoint()) {
+            return;
+        }
         String var2 = this.selectedWaypoint.name;
         if (var2 != null) {
             this.deleteClicked = true;
@@ -132,6 +135,12 @@ public class GuiWaypoints extends GuiScreenMinimap implements IGuiWaypoints {
             VoxelConstants.getMinecraft().setScreen(confirmScreen);
         }
 
+    }
+
+    private boolean canManageSelectedWaypoint() {
+        return this.selectedWaypoint != null
+                && (this.selectedWaypoint.itemIconId == null
+                || VoxelConstants.getPlayer().hasPermissionLevel(2));
     }
 
     private void teleportClicked() {
@@ -190,7 +199,7 @@ public class GuiWaypoints extends GuiScreenMinimap implements IGuiWaypoints {
     public void accept(boolean b) {
         if (this.deleteClicked) {
             this.deleteClicked = false;
-            if (b) {
+            if (b && canManageSelectedWaypoint()) {
                 this.waypointManager.deleteWaypoint(this.selectedWaypoint);
                 this.selectedWaypoint = null;
             }
@@ -223,7 +232,7 @@ public class GuiWaypoints extends GuiScreenMinimap implements IGuiWaypoints {
         this.selectedWaypoint = waypoint;
         boolean isSomethingSelected = this.selectedWaypoint != null;
         this.buttonEdit.active = isSomethingSelected;
-        this.buttonDelete.active = isSomethingSelected;
+        this.buttonDelete.active = isSomethingSelected && canManageSelectedWaypoint();
         this.buttonHighlight.active = isSomethingSelected;
         this.buttonHighlight.setMessage(Text.translatable(isSomethingSelected && this.selectedWaypoint == this.highlightedWaypoint ? "minimap.waypoints.removehighlight" : "minimap.waypoints.highlight"));
         this.buttonShare.active = isSomethingSelected;

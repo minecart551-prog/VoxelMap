@@ -40,6 +40,7 @@ public class GuiAddWaypoint extends GuiScreenMinimap implements IPopupGuiScreen 
     protected final Waypoint waypoint;
     private boolean choosingColor;
     private boolean choosingIcon;
+    private boolean applyingPastedCoordinates;
     private final float red;
     private final float green;
     private final float blue;
@@ -93,12 +94,50 @@ public class GuiAddWaypoint extends GuiScreenMinimap implements IPopupGuiScreen 
         this.doneButton = new PopupGuiButton(this.getWidth() / 2 - 155, this.getHeight() / 6 + 168, 150, 20, Text.translatable("addServer.add"), button -> this.acceptWaypoint(), this);
         this.addDrawableChild(this.doneButton);
         this.addDrawableChild(new PopupGuiButton(this.getWidth() / 2 + 5, this.getHeight() / 6 + 168, 150, 20, Text.translatable("gui.cancel"), button -> this.cancelWaypoint(), this));
-        this.doneButton.active = !this.waypointName.getText().isEmpty();
+        this.waypointX.setChangedListener(this::coordinateTextChanged);
+        this.waypointY.setChangedListener(this::coordinateTextChanged);
+        this.waypointZ.setChangedListener(this::coordinateTextChanged);
+        this.updateDoneButton();
         this.setFocused(this.waypointName);
         this.waypointName.setFocused(true);
         this.dimensionList = new GuiSlotDimensions(this);
     }
 
+    private void coordinateTextChanged(String text) {
+        if (!this.applyingPastedCoordinates) {
+            String[] coordinates = text.trim().split("\\s+");
+            if (coordinates.length == 3 && isInteger(coordinates[0])
+                    && isInteger(coordinates[1]) && isInteger(coordinates[2])) {
+                this.applyingPastedCoordinates = true;
+                try {
+                    // Pasted coordinates use Minecraft's standard X Y Z order. The screen's
+                    // visual field order is X Z Y, so route each value to its labelled field.
+                    this.waypointX.setText(coordinates[0]);
+                    this.waypointY.setText(coordinates[1]);
+                    this.waypointZ.setText(coordinates[2]);
+                } finally {
+                    this.applyingPastedCoordinates = false;
+                }
+            }
+        }
+        this.updateDoneButton();
+    }
+
+    private static boolean isInteger(String value) {
+        try {
+            Integer.parseInt(value);
+            return true;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
+    private void updateDoneButton() {
+        this.doneButton.active = !this.waypointName.getText().isEmpty()
+                && isInteger(this.waypointX.getText())
+                && isInteger(this.waypointY.getText())
+                && isInteger(this.waypointZ.getText());
+    }
     @Override
     public void removed() {
     }

@@ -69,7 +69,7 @@ public class WaypointContainer {
             Matrix4f matrix4f = matrixStack.peek().getPositionMatrix();
 
             for (Waypoint pt : this.wayPts) {
-                if (pt.isActive() || pt == this.highlightedWaypoint) {
+                if ((pt.isActive() || pt == this.highlightedWaypoint) && pt.itemIconId == null) {
                     int x = pt.getX();
                     int z = pt.getZ();
                     WorldChunk chunk = VoxelConstants.getPlayer().getWorld().getChunk(x >> 4, z >> 4);
@@ -89,7 +89,7 @@ public class WaypointContainer {
             OpenGL.glBlendFuncSeparate(OpenGL.GL11_GL_SRC_ALPHA, OpenGL.GL11_GL_ONE_MINUS_SRC_ALPHA, 1, OpenGL.GL11_GL_ONE_MINUS_SRC_ALPHA);
 
             for (Waypoint pt : this.wayPts) {
-                if (pt.isActive() || pt == this.highlightedWaypoint) {
+                if ((pt.isActive() || pt == this.highlightedWaypoint) && pt.itemIconId == null) {
                     int x = pt.getX();
                     int z = pt.getZ();
                     int y = pt.getY();
