@@ -134,6 +134,8 @@
   "options.worldmap.warning": "Edit at your own risk",
   "options.worldmap.showwaypoints": "Show Waypoints",
   "options.worldmap.showwaypointnames": "Show Waypoint Names",
+  "options.worldmap.factions.on": "Factions: on",
+  "options.worldmap.factions.off": "Factions: off",
   "options.worldmap.minzoom": "Min Zoom",
   "options.worldmap.maxzoom": "Max Zoom",
   "options.worldmap.cachesize": "Regions Cache Size",

@@ -3,6 +3,8 @@ package com.mamiyaotaru.voxelmap.persistent;
 import com.mamiyaotaru.voxelmap.MapSettingsManager;
 import com.mamiyaotaru.voxelmap.VoxelConstants;
 import com.mamiyaotaru.voxelmap.WaypointManager;
+import com.mamiyaotaru.voxelmap.factions.FactionClaimStore;
+import com.mamiyaotaru.voxelmap.factions.FactionClaimStore.FactionArea;
 import com.mamiyaotaru.voxelmap.fabricmod.FabricModVoxelMap;
 import com.mamiyaotaru.voxelmap.gui.GuiAddWaypoint;
 import com.mamiyaotaru.voxelmap.gui.GuiMinimapOptions;
@@ -25,6 +27,7 @@ import com.mamiyaotaru.voxelmap.util.ItemWaypointRenderer;
 import com.mamiyaotaru.voxelmap.util.OpenGL;
 import com.mamiyaotaru.voxelmap.util.Waypoint;
 import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ConfirmScreen;
 import net.minecraft.client.gui.screen.Screen;
@@ -43,6 +46,7 @@ import net.minecraft.client.texture.PlayerSkinTexture;
 import net.minecraft.client.util.DefaultSkinHelper;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.item.ItemStack;
@@ -53,7 +57,9 @@ import org.lwjgl.glfw.GLFW;
 
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -70,6 +76,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     protected int maxWorldNameDisplayLength;
     private String subworldName = "";
     private PopupGuiButton buttonMultiworld;
+    private PopupGuiButton buttonFactions;
     private int top;
     private int bottom;
     private boolean oldNorth;
@@ -129,10 +136,19 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     final InputUtil.Key nullInput = InputUtil.fromTranslationKey("key.keyboard.unknown");
     private Text multiworldButtonName;
     private MutableText multiworldButtonNameRed;
+    private FactionArea selectedFaction;
+    private String selectedFactionDimension = "";
+    private double factionClickX;
+    private double factionClickY;
+    private double pressX;
+    private double pressY;
+    private boolean pressOnMap;
     int sideMargin = 10;
     int buttonCount = 5;
     int buttonSeparation = 4;
     int buttonWidth = 66;
+    private static final int FACTION_FILL_ALPHA = 0x30;
+    private static final int FACTION_BORDER_ALPHA = 0xB0;
     public boolean editClicked;
     public boolean deleteClicked;
     public boolean addClicked;
@@ -214,10 +230,23 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         this.buttonSeparation = 4;
         this.buttonWidth = (this.width - this.sideMargin * 2 - this.buttonSeparation * (this.buttonCount - 1)) / this.buttonCount;
         this.addDrawableChild(new PopupGuiButton(this.sideMargin, this.getHeight() - 28, this.buttonWidth, 20, Text.translatable("options.minimap.waypoints"), buttonWidget_1 -> VoxelConstants.getMinecraft().setScreen(new GuiWaypoints(this)), this));
+        int nextButtonSlot = 1;
+        if (FactionClaimStore.isAvailable()) {
+            this.buttonFactions = new PopupGuiButton(this.sideMargin + nextButtonSlot * (this.buttonWidth + this.buttonSeparation), this.getHeight() - 28, this.buttonWidth, 20, this.factionsButtonName(), buttonWidget_1 -> {
+                this.options.showFactionAreas = !this.options.showFactionAreas;
+                this.buttonFactions.setMessage(this.factionsButtonName());
+                if (!this.options.showFactionAreas) {
+                    this.selectedFaction = null;
+                }
+            }, this);
+            this.addDrawableChild(this.buttonFactions);
+            nextButtonSlot++;
+        }
+
         this.multiworldButtonName = Text.translatable(VoxelConstants.getMinecraft().isConnectedToRealms() ? "menu.online" : "options.worldmap.multiworld");
         this.multiworldButtonNameRed = (Text.translatable(VoxelConstants.getMinecraft().isConnectedToRealms() ? "menu.online" : "options.worldmap.multiworld")).formatted(Formatting.RED);
         if (!VoxelConstants.getMinecraft().isIntegratedServerRunning() && !VoxelConstants.getVoxelMapInstance().getWaypointManager().receivedAutoSubworldName()) {
-            this.addDrawableChild(this.buttonMultiworld = new PopupGuiButton(this.sideMargin + (this.buttonWidth + this.buttonSeparation), this.getHeight() - 28, this.buttonWidth, 20, this.multiworldButtonName, buttonWidget_1 -> VoxelConstants.getMinecraft().setScreen(new GuiSubworldsSelect(this)), this));
+            this.addDrawableChild(this.buttonMultiworld = new PopupGuiButton(this.sideMargin + nextButtonSlot * (this.buttonWidth + this.buttonSeparation), this.getHeight() - 28, this.buttonWidth, 20, this.multiworldButtonName, buttonWidget_1 -> VoxelConstants.getMinecraft().setScreen(new GuiSubworldsSelect(this)), this));
         }
 
         this.addDrawableChild(new PopupGuiButton(this.sideMargin + 3 * (this.buttonWidth + this.buttonSeparation), this.getHeight() - 28, this.buttonWidth, 20, Text.translatable("menu.options"), null, this) {
@@ -251,6 +280,10 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         VoxelConstants.getMinecraft().options.rightKey.setBoundKey(this.nullInput);
         VoxelConstants.getMinecraft().options.sprintKey.setBoundKey(this.nullInput);
         KeyBinding.updateKeysByCode();
+    }
+
+    private Text factionsButtonName() {
+        return Text.translatable(this.options.showFactionAreas ? "options.worldmap.factions.on" : "options.worldmap.factions.off");
     }
 
     private void centerAt(int x, int z) {
@@ -363,11 +396,29 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             this.createPopup((int) mouseX, (int) mouseY, mouseDirectX, mouseDirectY);
         }
 
+        // A press+release on the map without meaningful movement is a click, not
+        // a view drag; clicks select the faction whose claim was hit, if any.
+        if (button == 0 && this.pressOnMap) {
+            this.pressOnMap = false;
+            boolean isClick = Math.abs(mouseX - this.pressX) <= 4.0 && Math.abs(mouseY - this.pressY) <= 4.0;
+            if (isClick && mouseY > this.top && mouseY < this.bottom) {
+                this.selectFactionAt(mouseX, mouseY);
+            }
+        }
+
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button == 0) {
+            this.pressX = mouseX;
+            this.pressY = mouseY;
+            // popupOpen() actually returns whether no popup menu is open; skip
+            // tracking then so menu clicks never select a faction underneath.
+            this.pressOnMap = this.popupOpen() && mouseY > this.top && mouseY < this.bottom;
+        }
+
         if (this.popupOpen()) {
             this.coordinates.mouseClicked(mouseX, mouseY, button);
             this.editingCoordinates = this.coordinates.isFocused();
@@ -662,6 +713,10 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             }
         }
 
+        if (this.options.showFactionAreas) {
+            this.drawFactionAreas(drawContext);
+        }
+
         float cursorX;
         float cursorY;
         if (this.mouseCursorShown) {
@@ -862,6 +917,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         }
 
         super.render(drawContext, mouseX, mouseY, delta);
+        this.drawFactionInfo(drawContext);
     }
 
     private void drawWaypoint(DrawContext drawContext, Waypoint pt, float cursorCoordX, float cursorCoordZ, Sprite icon, Float r, Float g, Float b) {
@@ -966,6 +1022,292 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         }
 
         return x > left && x < right && z > top && z < bottom;
+    }
+
+    private void drawFactionAreas(DrawContext drawContext) {
+        ClientWorld world = this.persistentMap.world;
+        if (world == null) return;
+
+        String dimension = world.getRegistryKey().getValue().toString();
+        List<FactionArea> areas = FactionClaimStore.getAreas(dimension);
+        if (areas.isEmpty()) return;
+
+        // Visible block bounds, with the same margin as isOnScreen
+        int viewLeft;
+        int viewRight;
+        int viewTop;
+        int viewBottom;
+        if (this.oldNorth) {
+            viewLeft = (int) Math.floor(this.mapCenterZ - (this.centerY * this.guiToMap) * 1.1);
+            viewRight = (int) Math.floor(this.mapCenterZ + (this.centerY * this.guiToMap) * 1.1);
+            viewTop = (int) Math.floor((-this.mapCenterX) - (this.centerX * this.guiToMap) * 1.1);
+            viewBottom = (int) Math.floor((-this.mapCenterX) + (this.centerX * this.guiToMap) * 1.1);
+        } else {
+            viewLeft = (int) Math.floor(this.mapCenterX - (this.centerX * this.guiToMap) * 1.1);
+            viewRight = (int) Math.floor(this.mapCenterX + (this.centerX * this.guiToMap) * 1.1);
+            viewTop = (int) Math.floor(this.mapCenterZ - (this.centerY * this.guiToMap) * 1.1);
+            viewBottom = (int) Math.floor(this.mapCenterZ + (this.centerY * this.guiToMap) * 1.1);
+        }
+
+        float lineThickness = 1.5F / this.scScale;
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+
+        // Translucent fill for every claimed chunk
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        for (FactionArea area : areas) {
+            int color = (FACTION_FILL_ALPHA << 24) | (area.color & 0xFFFFFF);
+            for (long key : area.claimsIn(dimension)) {
+                int blockX = FactionClaimStore.chunkX(key) * 16;
+                int blockZ = FactionClaimStore.chunkZ(key) * 16;
+                if (blockX + 16 < viewLeft || blockX > viewRight
+                        || blockZ + 16 < viewTop || blockZ > viewBottom) continue;
+                this.fillClaimQuad(vertexBuffer, blockX, blockZ, color);
+            }
+        }
+        tessellator.draw();
+
+        // Border along every edge that faces wilderness or foreign territory
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        for (FactionArea area : areas) {
+            Set<Long> chunks = area.claimsIn(dimension);
+            if (chunks.isEmpty()) continue;
+            int color = (FACTION_BORDER_ALPHA << 24) | (area.color & 0xFFFFFF);
+            for (long key : chunks) {
+                int chunkX = FactionClaimStore.chunkX(key);
+                int chunkZ = FactionClaimStore.chunkZ(key);
+                int blockX = chunkX * 16;
+                int blockZ = chunkZ * 16;
+                if (blockX + 16 < viewLeft || blockX > viewRight
+                        || blockZ + 16 < viewTop || blockZ > viewBottom) continue;
+                float x0 = blockX * this.mapToGui;
+                float z0 = blockZ * this.mapToGui;
+                float x1 = x0 + 16 * this.mapToGui;
+                float z1 = z0 + 16 * this.mapToGui;
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX, chunkZ - 1))) {
+                    this.fillClaimQuad(vertexBuffer, x0, z0, x1, z0 + lineThickness, color);
+                }
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX, chunkZ + 1))) {
+                    this.fillClaimQuad(vertexBuffer, x0, z1 - lineThickness, x1, z1, color);
+                }
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX - 1, chunkZ))) {
+                    this.fillClaimQuad(vertexBuffer, x0, z0, x0 + lineThickness, z1, color);
+                }
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX + 1, chunkZ))) {
+                    this.fillClaimQuad(vertexBuffer, x1 - lineThickness, z0, x1, z1, color);
+                }
+            }
+        }
+        tessellator.draw();
+
+        this.drawFactionHomes(drawContext, areas, dimension);
+    }
+
+    private void fillClaimQuad(BufferBuilder buffer, int blockX, int blockZ, int color) {
+        float x0 = blockX * this.mapToGui;
+        float z0 = blockZ * this.mapToGui;
+        this.fillClaimQuad(buffer, x0, z0, x0 + 16 * this.mapToGui, z0 + 16 * this.mapToGui, color);
+    }
+
+    private void fillClaimQuad(BufferBuilder buffer, float x0, float z0, float x1, float z1, int color) {
+        int red = color >> 16 & 255;
+        int green = color >> 8 & 255;
+        int blue = color & 255;
+        int alpha = color >>> 24;
+        buffer.vertex(x0, z1, 0).color(red, green, blue, alpha).next();
+        buffer.vertex(x1, z1, 0).color(red, green, blue, alpha).next();
+        buffer.vertex(x1, z0, 0).color(red, green, blue, alpha).next();
+        buffer.vertex(x0, z0, 0).color(red, green, blue, alpha).next();
+    }
+
+    private void drawFactionHomes(DrawContext drawContext, List<FactionArea> areas, String dimension) {
+        MatrixStack matrixStack = drawContext.getMatrices();
+        TextureAtlas atlas = VoxelConstants.getVoxelMapInstance().getWaypointManager().getTextureAtlas();
+        Sprite icon = atlas.getAtlasSprite("voxelmap:images/waypoints/waypointhouse.png");
+        if (icon == atlas.getMissingImage()) {
+            icon = atlas.getAtlasSprite("voxelmap:images/waypoints/waypoint.png");
+        }
+
+        RenderSystem.setShader(GameRenderer::getPositionTexProgram);
+        OpenGL.Utils.disp2(atlas.getGlId());
+        OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MIN_FILTER, OpenGL.GL11_GL_LINEAR);
+        OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MAG_FILTER, OpenGL.GL11_GL_LINEAR);
+        OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+
+        for (FactionArea area : areas) {
+            if (!dimension.equals(area.homeDimension)) continue;
+            int homeBlockX = (int) Math.floor(area.homeX);
+            int homeBlockZ = (int) Math.floor(area.homeZ);
+            if (!this.isOnScreen(homeBlockX, homeBlockZ)) continue;
+
+            float homeX = (float) (area.homeX * this.mapToGui);
+            float homeZ = (float) (area.homeZ * this.mapToGui);
+
+            if (this.oldNorth) {
+                matrixStack.push();
+                matrixStack.translate(homeX, homeZ, 0.0);
+                matrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-90.0F));
+                matrixStack.translate(-homeX, -homeZ, 0.0);
+                RenderSystem.applyModelViewMatrix();
+            }
+
+            this.drawTexturedModalRect(homeX - 20.0F / this.scScale, homeZ - 20.0F / this.scScale, icon, 40.0F / this.scScale, 40.0F / this.scScale);
+            if (this.oldNorth) {
+                matrixStack.pop();
+                RenderSystem.applyModelViewMatrix();
+            }
+
+            float fontScale = 2.0F / this.scScale;
+            int nameWidth = this.chkLen(area.name) / 2;
+            matrixStack.push();
+            matrixStack.scale(fontScale, fontScale, 1.0F);
+            if (this.oldNorth) {
+                matrixStack.translate(homeX / fontScale, homeZ / fontScale, 0.0);
+                matrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-90.0F));
+                matrixStack.translate(-homeX / fontScale, -homeZ / fontScale, 0.0);
+                RenderSystem.applyModelViewMatrix();
+            }
+
+            this.write(drawContext, area.name, homeX / fontScale - nameWidth, homeZ / fontScale + 24.0F / this.scScale / fontScale, factionLabelColor(area.color));
+            matrixStack.pop();
+            RenderSystem.applyModelViewMatrix();
+        }
+
+        OpenGL.glEnable(OpenGL.GL11_GL_BLEND);
+    }
+
+    /**
+     * Keeps home labels readable on dark maps by falling back to white for
+     * faction colors that are too dark.
+     */
+    private static int factionLabelColor(int color) {
+        int red = color >> 16 & 255;
+        int green = color >> 8 & 255;
+        int blue = color & 255;
+        double luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255.0;
+        return luminance < 0.35 ? 16777215 : color;
+    }
+
+    /**
+     * Selects the faction whose claim covers the clicked map position, or
+     * clears the selection when the click hit wilderness.
+     */
+    private void selectFactionAt(double mouseX, double mouseY) {
+        this.selectedFaction = null;
+        this.factionClickX = mouseX;
+        this.factionClickY = mouseY;
+
+        ClientWorld world = this.persistentMap.world;
+        if (world == null || !this.options.showFactionAreas) return;
+
+        String dimension = world.getRegistryKey().getValue().toString();
+        List<FactionArea> areas = FactionClaimStore.getAreas(dimension);
+        if (areas.isEmpty()) return;
+
+        // Same screen to map conversion as the cursor coordinates in render,
+        // from GUI scaled mouse coordinates instead of raw ones.
+        float cursorCoordX;
+        float cursorCoordZ;
+        if (this.oldNorth) {
+            cursorCoordX = (float) ((mouseY - this.top) * this.guiToMap + (this.mapCenterZ - this.centerY * this.guiToMap));
+            cursorCoordZ = -(float) (mouseX * this.guiToMap + (this.mapCenterX - this.centerX * this.guiToMap));
+        } else {
+            cursorCoordX = (float) (mouseX * this.guiToMap + (this.mapCenterX - this.centerX * this.guiToMap));
+            cursorCoordZ = (float) ((mouseY - this.top) * this.guiToMap + (this.mapCenterZ - this.centerY * this.guiToMap));
+        }
+
+        long chunkKey = FactionClaimStore.chunkKey((int) Math.floor(cursorCoordX / 16.0), (int) Math.floor(cursorCoordZ / 16.0));
+        for (FactionArea area : areas) {
+            if (area.claimsIn(dimension).contains(chunkKey)) {
+                this.selectedFaction = area;
+                break;
+            }
+        }
+    }
+
+    /**
+     * Draws the info box of the faction selected with a left click: the
+     * faction's name and description, until the selection is dismissed by
+     * clicking wilderness or turning the overlay off.
+     */
+    private void drawFactionInfo(DrawContext drawContext) {
+        if (this.selectedFaction == null || !this.options.showFactionAreas) return;
+
+        ClientWorld world = this.persistentMap.world;
+        if (world == null) {
+            this.selectedFaction = null;
+            return;
+        }
+
+        // Snapshots are replaced on every resync; refresh from the live one and
+        // drop the selection if the faction disappeared in the meantime.
+        String dimension = world.getRegistryKey().getValue().toString();
+        FactionArea current = null;
+        for (FactionArea area : FactionClaimStore.getAreas(dimension)) {
+            if (area.name.equals(this.selectedFaction.name)) {
+                current = area;
+                break;
+            }
+        }
+        if (current == null) {
+            this.selectedFaction = null;
+            return;
+        }
+        this.selectedFaction = current;
+
+        TextRenderer font = this.getFontRenderer();
+        int maxWidth = Math.min(160, this.getWidth() - 20);
+        List<String> descriptionLines = current.description.isEmpty()
+                ? List.of() : this.wrapFactionText(font, current.description, maxWidth);
+        int boxWidth = font.getWidth(current.name);
+        for (String line : descriptionLines) {
+            boxWidth = Math.max(boxWidth, font.getWidth(line));
+        }
+        boxWidth += 8;
+        int boxHeight = 4 + 9 + (descriptionLines.isEmpty() ? 0 : 2 + descriptionLines.size() * 9);
+
+        int x = (int) this.factionClickX + 8;
+        int y = (int) this.factionClickY + 8;
+        if (x + boxWidth > this.getWidth() - 4) x = (int) this.factionClickX - 8 - boxWidth;
+        if (y + boxHeight > this.getHeight() - 4) y = (int) this.factionClickY - 8 - boxHeight;
+        x = Math.max(4, x);
+        y = Math.max(this.top + 4, y);
+
+        drawContext.fill(x - 1, y - 1, x + boxWidth + 1, y + boxHeight + 1, 0xF0101010);
+        drawContext.fill(x, y, x + boxWidth, y + boxHeight, 0xD0202028);
+
+        drawContext.drawTextWithShadow(font, current.name, x + 4, y + 4, factionLabelColor(current.color));
+        int textY = y + 4 + 9 + 2;
+        for (String line : descriptionLines) {
+            drawContext.drawTextWithShadow(font, line, x + 4, textY, 0xE0E0E0);
+            textY += 9;
+        }
+    }
+
+    /**
+     * Word wraps faction description text to the given width, keeping any
+     * formatting codes the faction used.
+     */
+    private static List<String> wrapFactionText(TextRenderer font, String text, int maxWidth) {
+        List<String> lines = new ArrayList<>();
+        for (String paragraph : text.split("\n")) {
+            StringBuilder line = new StringBuilder();
+            for (String word : paragraph.split(" ")) {
+                String candidate = line.length() == 0 ? word : line + " " + word;
+                if (font.getWidth(candidate) > maxWidth && line.length() > 0) {
+                    lines.add(line.toString());
+                    line = new StringBuilder(word);
+                } else {
+                    line = new StringBuilder(candidate);
+                }
+            }
+            lines.add(line.toString());
+        }
+        return lines;
     }
 
     public void renderBackground(DrawContext drawContext) {

@@ -3,10 +3,12 @@ package com.mamiyaotaru.voxelmap.fabricmod;
 import com.google.gson.Gson;
 import com.mamiyaotaru.voxelmap.MapSettingsManager;
 import com.mamiyaotaru.voxelmap.VoxelConstants;
+import com.mamiyaotaru.voxelmap.factions.FactionClaimStore;
 import com.mamiyaotaru.voxelmap.persistent.ThreadManager;
 import com.mamiyaotaru.voxelmap.util.BiomeRepository;
 import com.mamiyaotaru.voxelmap.util.CommandUtils;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.hud.MessageIndicator;
 import net.minecraft.client.util.math.MatrixStack;
@@ -23,6 +25,8 @@ public class FabricModVoxelMap implements ClientModInitializer {
 
     public void onInitializeClient() {
         instance = this;
+        // Faction claim data synced by the Factions mod must not leak into the next server
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> FactionClaimStore.clear());
     }
 
     public void lateInit() {
@@ -147,6 +151,10 @@ public class FabricModVoxelMap implements ClientModInitializer {
                         default -> VoxelConstants.getLogger().warn("Unknown configuration option " + setting);
                     }
                 }
+                return true;
+            } else if (channelName.equals(FactionClaimStore.CHANNEL)) {
+                // Faction claim snapshot from the Factions mod, drawn on the full screen map
+                FactionClaimStore.handlePayload(buffer);
                 return true;
             }
         }

@@ -22,6 +22,7 @@ public class PersistentMapSettingsManager implements ISubSettingsManager {
     protected boolean outputImages;
     public boolean showWaypoints = true;
     public boolean showWaypointNames = true;
+    public boolean showFactionAreas = true;
 
     @Override
     public void loadSettings(File settingsFile) {
@@ -38,6 +39,7 @@ public class PersistentMapSettingsManager implements ISubSettingsManager {
                     case "Worldmap Cache Size" -> this.cacheSize = Integer.parseInt(curLine[1]);
                     case "Show Worldmap Waypoints" -> this.showWaypoints = Boolean.parseBoolean(curLine[1]);
                     case "Show Worldmap Waypoint Names" -> this.showWaypointNames = Boolean.parseBoolean(curLine[1]);
+                    case "Show Faction Areas" -> this.showFactionAreas = Boolean.parseBoolean(curLine[1]);
                     case "Output Images" -> this.outputImages = Boolean.parseBoolean(curLine[1]);
                 }
             }
@@ -67,6 +69,7 @@ public class PersistentMapSettingsManager implements ISubSettingsManager {
         out.println("Worldmap Cache Size:" + this.cacheSize);
         out.println("Show Worldmap Waypoints:" + this.showWaypoints);
         out.println("Show Worldmap Waypoint Names:" + this.showWaypointNames);
+        out.println("Show Faction Areas:" + this.showFactionAreas);
     }
 
     @Override
