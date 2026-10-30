@@ -693,13 +693,16 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             }
         }
 
+        // The player marker and direction chevron must remain visible above waypoint icons.
+        OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
         OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
         RenderSystem.setShader(GameRenderer::getPositionTexProgram);
+        float playerX = (float) GameVariableAccessShim.xCoordDouble();
+        float playerZ = (float) GameVariableAccessShim.zCoordDouble();
+
         OpenGL.Utils.disp2(playerGLID);
         OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MIN_FILTER, OpenGL.GL11_GL_LINEAR);
         OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MAG_FILTER, OpenGL.GL11_GL_LINEAR);
-        float playerX = (float) GameVariableAccessShim.xCoordDouble();
-        float playerZ = (float) GameVariableAccessShim.zCoordDouble();
         if (this.oldNorth) {
             modelViewMatrixStack.push();
             modelViewMatrixStack.translate(playerX * this.mapToGui, playerZ * this.mapToGui, 0.0);
@@ -708,10 +711,21 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             RenderSystem.applyModelViewMatrix();
         }
 
-        this.drawTexturedModalRect(-10.0F / this.scScale + playerX * this.mapToGui, -10.0F / this.scScale + playerZ * this.mapToGui, 20.0F / this.scScale, 20.0F / this.scScale);
+        this.drawTexturedModalRect(-20.0F / this.scScale + playerX * this.mapToGui, -20.0F / this.scScale + playerZ * this.mapToGui, 40.0F / this.scScale, 40.0F / this.scScale);
         if (this.oldNorth) {
             modelViewMatrixStack.pop();
+            RenderSystem.applyModelViewMatrix();
         }
+        modelViewMatrixStack.push();
+        modelViewMatrixStack.translate(playerX * this.mapToGui, playerZ * this.mapToGui, 0.0);
+        modelViewMatrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(
+                GameVariableAccessShim.rotationYaw() + 180.0F - (this.oldNorth ? 90.0F : 0.0F)));
+        modelViewMatrixStack.translate(-(playerX * this.mapToGui), -(playerZ * this.mapToGui), 0.0);
+        RenderSystem.applyModelViewMatrix();
+        this.drawPlayerDirectionChevron(playerX * this.mapToGui, playerZ * this.mapToGui);
+        modelViewMatrixStack.pop();
+        RenderSystem.applyModelViewMatrix();
+        OpenGL.glEnable(OpenGL.GL11_GL_DEPTH_TEST);
 
         if (this.oldNorth) {
             modelViewMatrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-90.0F));
@@ -871,7 +885,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             if (this.backGroundImageInfo != null && this.backGroundImageInfo.isInRange((int) ptX, (int) ptZ) || this.persistentMap.isRegionLoaded((int) ptX, (int) ptZ)) {
                 ptX += 0.5F;
                 ptZ += 0.5F;
-                float hoverRadius = pt.itemIconId == null ? 22.0F : 18.0F;
+                float hoverRadius = pt.itemIconId == null ? 32.0F : 18.0F;
                 boolean hover = cursorCoordX > ptX - hoverRadius * this.guiToMap / this.guiToDirectMouse && cursorCoordX < ptX + hoverRadius * this.guiToMap / this.guiToDirectMouse && cursorCoordZ > ptZ - hoverRadius * this.guiToMap / this.guiToDirectMouse && cursorCoordZ < ptZ + hoverRadius * this.guiToMap / this.guiToDirectMouse;
                 boolean target = false;
                 RenderSystem.setShader(GameRenderer::getPositionTexProgram);
@@ -900,7 +914,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
 
                 ItemStack itemIcon = ItemWaypointRenderer.resolve(pt);
                 if (itemIcon.isEmpty()) {
-                    this.drawTexturedModalRect(-20.0F / this.scScale + ptX * this.mapToGui, -20.0F / this.scScale + ptZ * this.mapToGui, icon, 40.0F / this.scScale, 40.0F / this.scScale);
+                    this.drawTexturedModalRect(-30.0F / this.scScale + ptX * this.mapToGui, -30.0F / this.scScale + ptZ * this.mapToGui, icon, 60.0F / this.scScale, 60.0F / this.scScale);
                 } else {
                     ItemWaypointRenderer.draw(drawContext, itemIcon, ptX * this.mapToGui, ptZ * this.mapToGui,
                             32.0F / this.scScale * mapOptions.waypointItemIconScale);
@@ -923,7 +937,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                         RenderSystem.applyModelViewMatrix();
                     }
 
-                    float nameOffset = pt.itemIconId == null ? 20.0F : 16.0F;
+                    float nameOffset = pt.itemIconId == null ? 30.0F : 16.0F;
                     this.write(drawContext, name, ptX * this.mapToGui / fontScale - m, ptZ * this.mapToGui / fontScale + nameOffset / this.scScale / fontScale, !pt.enabled && !target && !hover ? 1442840575 : 16777215);
                     matrixStack.pop();
                     RenderSystem.applyModelViewMatrix();
@@ -995,6 +1009,39 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             this.persistentMap.getRegions(0, -1, 0, -1);
             this.regions = new CachedRegion[0];
         }
+    }
+
+    private void drawPlayerDirectionChevron(float centerX, float centerY) {
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+        RenderSystem.enableBlend();
+        OpenGL.glBlendFunc(OpenGL.GL11_GL_SRC_ALPHA, OpenGL.GL11_GL_ONE_MINUS_SRC_ALPHA);
+
+        // Two crisp cyan strokes form a simple chevron beyond the 20px skin radius.
+        this.drawChevronArms(centerX, centerY, 4.0F, 45, 225, 255, 255);
+    }
+
+    private void drawChevronArms(float centerX, float centerY, float thickness, int red, int green, int blue, int alpha) {
+        float scale = 1.0F / this.scScale;
+        float halfThickness = thickness * 0.5F * scale;
+        float tipX = centerX;
+        float tipY = centerY - 42.0F * scale;
+        float leftX = centerX - 12.0F * scale;
+        float rightX = centerX + 12.0F * scale;
+        float tailY = centerY - 29.0F * scale;
+        float normal = halfThickness * 0.70710677F;
+
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        vertexBuffer.vertex(leftX - normal, tailY - normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(leftX + normal, tailY + normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(tipX + normal, tipY + normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(tipX - normal, tipY - normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(tipX - normal, tipY + normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(tipX + normal, tipY - normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(rightX - normal, tailY + normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(rightX + normal, tailY - normal, 0).color(red, green, blue, alpha).next();
+        tessellator.draw();
     }
 
     public void drawTexturedModalRect(float x, float y, float width, float height) {
