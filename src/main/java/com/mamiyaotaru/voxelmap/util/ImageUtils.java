@@ -13,6 +13,8 @@ import java.awt.*;
 import java.awt.geom.AffineTransform;
 import java.awt.image.AffineTransformOp;
 import java.awt.image.BufferedImage;
+import java.awt.image.DataBufferByte;
+import java.awt.image.PixelInterleavedSampleModel;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -92,22 +94,7 @@ public class ImageUtils {
         BufferedImage image;
         if (size < 2147483647L) {
             image = new BufferedImage(imageWidth, imageHeight, 6);
-            ByteBuffer byteBuffer = ByteBuffer.allocateDirect(imageWidth * imageHeight * 4).order(ByteOrder.nativeOrder());
-            OpenGL.glGetTexImage(OpenGL.GL11_GL_TEXTURE_2D, 0, OpenGL.GL11_GL_RGBA, OpenGL.GL11_GL_UNSIGNED_BYTE, byteBuffer);
-            byteBuffer.position(0);
-            byte[] bytes = new byte[byteBuffer.remaining()];
-            byteBuffer.get(bytes);
-            for (int x = 0; x < imageWidth; ++x) {
-                for (int y = 0; y < imageHeight; ++y) {
-                    int index = y * imageWidth * 4 + x * 4;
-                    byte var8 = 0;
-                    int color24 = var8 | (bytes[index + 2] & 255);
-                    color24 |= (bytes[index + 1] & 255) << 8;
-                    color24 |= (bytes[index] & 255) << 16;
-                    color24 |= (bytes[index + 3] & 255) << 24;
-                    image.setRGB(x, y, color24);
-                }
-            }
+            readTextureIntoImage(image);
         } else {
             while (size > 2147483647L) {
                 imageWidth /= 2;
@@ -166,6 +153,43 @@ public class ImageUtils {
             OpenGL.glViewport(0, 0, VoxelConstants.getMinecraft().getWindow().getFramebufferWidth(), VoxelConstants.getMinecraft().getWindow().getFramebufferHeight());
         }
         return image;
+    }
+
+    /**
+     * Reads the currently bound 2D texture straight into an existing TYPE_4BYTE_ABGR image. The whole
+     * texture still has to be handed to a single GL read, but that buffer lives off-heap and the rows
+     * are swizzled directly into the image's own byte buffer. This avoids the extra atlas sized
+     * heap byte[] and the per pixel setRGB() the previous implementation used, which roughly halved
+     * the peak heap needed for a large (HD resource pack) atlas.
+     */
+    private static void readTextureIntoImage(BufferedImage image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+        ByteBuffer byteBuffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder());
+        OpenGL.glGetTexImage(OpenGL.GL11_GL_TEXTURE_2D, 0, OpenGL.GL11_GL_RGBA, OpenGL.GL11_GL_UNSIGNED_BYTE, byteBuffer);
+        byteBuffer.position(0);
+
+        // TYPE_4BYTE_ABGR stores one pixel as A, B, G, R while GL hands us R, G, B, A.
+        DataBufferByte dataBuffer = (DataBufferByte) image.getRaster().getDataBuffer();
+        byte[] data = dataBuffer.getData();
+        int base = dataBuffer.getOffset();
+        int scanlineStride = ((PixelInterleavedSampleModel) image.getRaster().getSampleModel()).getScanlineStride();
+        byte[] row = new byte[width * 4];
+
+        for (int y = 0; y < height; ++y) {
+            byteBuffer.get(row);
+            int rowStart = base + y * scanlineStride;
+            for (int x = 0; x < row.length; x += 4) {
+                byte red = row[x];
+                byte green = row[x + 1];
+                byte blue = row[x + 2];
+                byte alpha = row[x + 3];
+                data[rowStart + x] = alpha;
+                data[rowStart + x + 1] = blue;
+                data[rowStart + x + 2] = green;
+                data[rowStart + x + 3] = red;
+            }
+        }
     }
 
     public static BufferedImage blankImage(Identifier resourceLocation, int w, int h) {

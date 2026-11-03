@@ -324,11 +324,12 @@ public class ColorManager {
         try {
             TextureManager textureManager = VoxelConstants.getMinecraft().getTextureManager();
             textureManager.bindTexture(PlayerScreenHandler.BLOCK_ATLAS_TEXTURE);
-            BufferedImage terrainStitched = ImageUtils.createBufferedImageFromCurrentGLImage();
-            this.terrainBuff = new BufferedImage(terrainStitched.getWidth(null), terrainStitched.getHeight(null), 6);
-            Graphics gfx = this.terrainBuff.createGraphics();
-            gfx.drawImage(terrainStitched, 0, 0, null);
-            gfx.dispose();
+            // drop the previous atlas first so it can be collected while the new one is allocated
+            this.terrainBuff = null;
+            // the GL read already produces a TYPE_4BYTE_ABGR image, so copying it into a second image of
+            // the same type only duplicated an atlas sized allocation (and Java2D's alpha blit through
+            // MaskBlit.convertFrom made a third one), which ran large atlases out of heap
+            this.terrainBuff = ImageUtils.createBufferedImageFromCurrentGLImage();
         } catch (Exception var4) {
             VoxelConstants.getLogger().error("Error processing new resource pack: " + var4.getLocalizedMessage(), var4);
         }
@@ -516,7 +517,7 @@ public class ColorManager {
 
     private int getColorForCoordinatesAndImage(float[] uv, BufferedImage imageBuff) {
         int color = 452984832;
-        if (uv[0] != this.failedToLoadX || uv[2] != this.failedToLoadY) {
+        if (imageBuff != null && (uv[0] != this.failedToLoadX || uv[2] != this.failedToLoadY)) {
             int left = (int) (uv[0] * imageBuff.getWidth());
             int right = (int) Math.ceil(uv[1] * imageBuff.getWidth());
             int top = (int) (uv[2] * imageBuff.getHeight());
