@@ -1,11 +1,14 @@
 package com.mamiyaotaru.voxelmap;
 
+import com.mamiyaotaru.voxelmap.factions.FactionClaimStore;
+import com.mamiyaotaru.voxelmap.factions.FactionClaimStore.FactionArea;
 import com.mamiyaotaru.voxelmap.gui.GuiAddWaypoint;
 import com.mamiyaotaru.voxelmap.gui.GuiWaypoints;
 import com.mamiyaotaru.voxelmap.gui.overridden.EnumOptionsMinimap;
 import com.mamiyaotaru.voxelmap.interfaces.AbstractMapData;
 import com.mamiyaotaru.voxelmap.interfaces.IChangeObserver;
 import com.mamiyaotaru.voxelmap.persistent.GuiPersistentMap;
+import com.mamiyaotaru.voxelmap.players.PlayerPositionStore;
 import com.mamiyaotaru.voxelmap.textures.Sprite;
 import com.mamiyaotaru.voxelmap.textures.TextureAtlas;
 import com.mamiyaotaru.voxelmap.util.BiomeRepository;
@@ -34,11 +37,14 @@ import net.minecraft.block.Blocks;
 import net.minecraft.block.GlassBlock;
 import net.minecraft.block.LeavesBlock;
 import net.minecraft.block.StainedGlassBlock;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.DeathScreen;
 import net.minecraft.client.gui.screen.OutOfMemoryScreen;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.network.ClientPlayNetworkHandler;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.option.GameOptions;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.render.BackgroundRenderer;
@@ -49,8 +55,11 @@ import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.LightmapTextureManager;
 import net.minecraft.client.render.Tessellator;
 import net.minecraft.client.render.VertexConsumerProvider;
+import net.minecraft.client.render.VertexFormat;
+import net.minecraft.client.render.VertexFormats;
 import net.minecraft.client.resource.language.I18n;
 import net.minecraft.client.texture.NativeImageBackedTexture;
+import net.minecraft.client.util.DefaultSkinHelper;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.effect.StatusEffectInstance;
@@ -84,8 +93,11 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import java.util.TreeSet;
+import java.util.UUID;
 
 public class Map implements Runnable, IChangeObserver {
     private final float[] lastLightBrightnessTable = new float[16];
@@ -1606,6 +1618,14 @@ public class Map implements Runnable, IChangeObserver {
         OpenGL.Utils.ldrawthree(512.0, 0.0, 1.0, 1.0F, 1.0F);
         OpenGL.Utils.ldrawthree(0.0, 0.0, 1.0, 0.0F, 1.0F);
         OpenGL.Utils.drawPost();
+        int claimMulti = 1 << this.zoom;
+        float claimScale = 512.0F / (32 * claimMulti);
+        // claims share the image's anchor and transform, so they line up with
+        // the terrain and inherit the rotation and the circle clipping
+        this.drawFactionAreaOverlay(
+                -this.percentX * 512.0F / 64.0F - (this.lastImageX - 16 * claimMulti) * claimScale,
+                this.percentY * 512.0F / 64.0F + 512.0F + (this.lastImageZ - 16 * claimMulti) * claimScale,
+                claimScale, -claimScale, 256.0F, 256.0F, 400.0F);
         matrixStack.pop();
         RenderSystem.applyModelViewMatrix();
         OpenGL.glDepthMask(true);
@@ -1657,7 +1677,249 @@ public class Map implements Runnable, IChangeObserver {
             this.drawWaypoint(drawContext, matrixStack, highlightedPoint, textureAtlas, x, y, scScale, lastXDouble, lastZDouble, textureAtlas.getAtlasSprite("voxelmap:images/waypoints/target.png"), 1.0F, 0.0F, 0.0F);
         }
 
+        this.drawOtherPlayerHeads(matrixStack, x, y, this.zoomScaleAdjusted, this.options.rotates, this.options.squareMap, 30.0);
+
         OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+    }
+
+    private static final int FACTION_FILL_ALPHA = 0x30;
+    private static final int FACTION_BORDER_ALPHA = 0xB0;
+
+    // Minimap player head markers: size in gui pixels, and the face region of a
+    // 64x64 skin in normalized texture coordinates
+    private static final float PLAYER_HEAD_MINIMAP_SIZE = 9.0F;
+    private static final float SKIN_FACE_U0 = 8.0F / 64.0F;
+    private static final float SKIN_FACE_V0 = 8.0F / 64.0F;
+    private static final float SKIN_FACE_U1 = 16.0F / 64.0F;
+    private static final float SKIN_FACE_V1 = 16.0F / 64.0F;
+    private static final float SKIN_HAT_U0 = 40.0F / 64.0F;
+    private static final float SKIN_HAT_U1 = 48.0F / 64.0F;
+
+    /**
+     * Draws a head for every other player on the given map view, using the
+     * positions the Factions mod syncs, so players show up no matter how far
+     * away they are.
+     *
+     * <p>Screen space: the caller passes the map centre, and markers are placed
+     * by direction and distance from the player, same as waypoints.
+     *
+     * @param blocksPerPixel how many blocks one gui pixel covers on this view
+     * @param rotatesWithPlayer whether the view turns with the player's facing
+     * @param square whether the view is a square rather than a circle
+     * @param cullRadius distance past which a marker falls outside the view
+     */
+    private void drawOtherPlayerHeads(MatrixStack matrixStack, float x, float y, double blocksPerPixel,
+            boolean rotatesWithPlayer, boolean square, double cullRadius) {
+        MinecraftClient client = VoxelConstants.getMinecraft();
+        if (client.player == null || client.world == null) return;
+
+        String dimension = client.world.getRegistryKey().getValue().toString();
+        UUID ownUUID = client.player.getUuid();
+        ClientPlayNetworkHandler networkHandler = client.getNetworkHandler();
+        double lastX = GameVariableAccessShim.xCoordDouble();
+        double lastZ = GameVariableAccessShim.zCoordDouble();
+
+        for (PlayerPositionStore.PlayerEntry entry : PlayerPositionStore.getEntries()) {
+            // Hidden players are drawn nowhere, and a head belongs in its own dimension
+            if (entry.hidden || !entry.dimension.equals(dimension) || entry.uuid.equals(ownUUID)) continue;
+
+            float locate = (float) Math.toDegrees(Math.atan2(lastX - entry.x, lastZ - entry.z));
+            double hypot = Math.sqrt((lastX - entry.x) * (lastX - entry.x) + (lastZ - entry.z) * (lastZ - entry.z))
+                    / blocksPerPixel;
+            if (rotatesWithPlayer) {
+                locate += this.direction;
+            } else {
+                locate -= this.northRotate;
+            }
+
+            if (square) {
+                double radLocate = Math.toRadians(locate);
+                if (Math.abs(hypot * Math.cos(radLocate)) > cullRadius || Math.abs(hypot * Math.sin(radLocate)) > cullRadius) continue;
+            } else if (hypot >= cullRadius) {
+                // Outside the visible map; nothing to draw
+                continue;
+            }
+
+            Identifier skin = DefaultSkinHelper.getTexture(entry.uuid);
+            if (networkHandler != null) {
+                PlayerListEntry listEntry = networkHandler.getPlayerListEntry(entry.uuid);
+                if (listEntry != null && listEntry.getSkinTexture() != null) {
+                    skin = listEntry.getSkinTexture();
+                }
+            }
+
+            // Head markers stay upright rather than rotating with the map
+            matrixStack.push();
+            matrixStack.translate(x, y, 0.0);
+            matrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-locate));
+            matrixStack.translate(0.0, -hypot, 0.0);
+            matrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(locate));
+            matrixStack.translate(-x, -y, 0.0);
+            RenderSystem.applyModelViewMatrix();
+
+            float half = PLAYER_HEAD_MINIMAP_SIZE / 2.0F;
+            RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+            this.drawSolidRect(x - half - 1.0F, y - half - 1.0F, PLAYER_HEAD_MINIMAP_SIZE + 2.0F, PLAYER_HEAD_MINIMAP_SIZE + 2.0F);
+            RenderSystem.setShader(GameRenderer::getPositionTexProgram);
+            RenderSystem.setShaderTexture(0, skin);
+            this.drawTexturedRect(x - half, y - half, PLAYER_HEAD_MINIMAP_SIZE, PLAYER_HEAD_MINIMAP_SIZE, SKIN_FACE_U0, SKIN_FACE_V0, SKIN_FACE_U1, SKIN_FACE_V1);
+            // The hat layer is a transparent overlay, so it goes right over the face
+            this.drawTexturedRect(x - half, y - half, PLAYER_HEAD_MINIMAP_SIZE, PLAYER_HEAD_MINIMAP_SIZE, SKIN_HAT_U0, SKIN_FACE_V0, SKIN_HAT_U1, SKIN_FACE_V1);
+
+            matrixStack.pop();
+            RenderSystem.applyModelViewMatrix();
+        }
+
+        OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+    }
+
+    private void drawSolidRect(float x, float y, float width, float height) {
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        vertexBuffer.vertex(x, y + height, 0.0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        vertexBuffer.vertex(x + width, y + height, 0.0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        vertexBuffer.vertex(x + width, y, 0.0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        vertexBuffer.vertex(x, y, 0.0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        tessellator.draw();
+    }
+
+    private void drawTexturedRect(float x, float y, float width, float height, float u0, float v0, float u1, float v1) {
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE);
+        vertexBuffer.vertex(x, y + height, 0.0).texture(u0, v1).next();
+        vertexBuffer.vertex(x + width, y + height, 0.0).texture(u1, v1).next();
+        vertexBuffer.vertex(x + width, y, 0.0).texture(u1, v0).next();
+        vertexBuffer.vertex(x, y, 0.0).texture(u0, v0).next();
+        tessellator.draw();
+    }
+
+    /**
+     * Overlays faction claim areas on a map image, in the coordinate space of
+     * that image, so claims line up with the terrain at any zoom and rotation.
+     * Must be called from inside the transform of the map quad being covered.
+     *
+     * @param baseX pixel x where block x 0 lands
+     * @param baseY pixel y where block z 0 lands
+     * @param scaleX pixels per block along x
+     * @param scaleY pixels per block along z, negative when that axis points north
+     * @param viewCenterX x of the center of the visible area, for culling
+     * @param viewCenterY y of the center of the visible area, for culling
+     * @param viewRadius distance from that center beyond which nothing can show
+     */
+    private void drawFactionAreaOverlay(float baseX, float baseY, float scaleX, float scaleY,
+            float viewCenterX, float viewCenterY, float viewRadius) {
+        if (this.world == null || !VoxelConstants.getVoxelMapInstance().getPersistentMapOptions().showFactionAreas) return;
+
+        String dimension = this.world.getRegistryKey().getValue().toString();
+        List<FactionArea> areas = FactionClaimStore.getAreas(dimension);
+        if (areas.isEmpty()) return;
+
+        // one block wide outlines, so borders stay visible on small chunks
+        float lineThickness = Math.max(1.0F, Math.abs(scaleX));
+        float radiusSquared = viewRadius * viewRadius;
+
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+        OpenGL.glEnable(OpenGL.GL11_GL_BLEND);
+        // Translucent quads over the map while leaving the framebuffer's alpha
+        // untouched - the round minimap mask lives in that alpha channel.
+        OpenGL.glBlendFuncSeparate(OpenGL.GL11_GL_SRC_ALPHA, OpenGL.GL11_GL_ONE_MINUS_SRC_ALPHA, 0, 1);
+
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+
+        // Fill first, one quad per merged run of neighbouring chunks
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        for (FactionArea area : areas) {
+            int fillColor = (FACTION_FILL_ALPHA << 24) | (area.color & 0xFFFFFF);
+            for (FactionClaimStore.ClaimRun run : area.runsIn(dimension)) {
+                float x0 = baseX + run.chunkX0 * 16 * scaleX;
+                float x1 = baseX + (run.chunkX1 + 1) * 16 * scaleX;
+                float y0 = baseY + run.chunkZ * 16 * scaleY;
+                float y1 = baseY + (run.chunkZ * 16 + 16) * scaleY;
+                float minX = Math.min(x0, x1);
+                float maxX = Math.max(x0, x1);
+                float minY = Math.min(y0, y1);
+                float maxY = Math.max(y0, y1);
+
+                // cull what no rotation of the view could bring on screen
+                float closestX = Math.max(minX, Math.min(viewCenterX, maxX));
+                float closestY = Math.max(minY, Math.min(viewCenterY, maxY));
+                float deltaX = closestX - viewCenterX;
+                float deltaY = closestY - viewCenterY;
+                if (deltaX * deltaX + deltaY * deltaY > radiusSquared) continue;
+
+                fillFactionQuad(vertexBuffer, minX, minY, maxX, maxY, fillColor);
+            }
+        }
+        tessellator.draw();
+
+        // Then borders, which still have to look at every chunk to find open edges
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        for (FactionArea area : areas) {
+            int borderColor = (FACTION_BORDER_ALPHA << 24) | (area.color & 0xFFFFFF);
+            Set<Long> chunks = area.claimsIn(dimension);
+            if (chunks.isEmpty()) continue;
+            for (long key : chunks) {
+                int chunkX = FactionClaimStore.chunkX(key);
+                int chunkZ = FactionClaimStore.chunkZ(key);
+                float x0 = baseX + chunkX * 16 * scaleX;
+                float x1 = baseX + (chunkX * 16 + 16) * scaleX;
+                float y0 = baseY + chunkZ * 16 * scaleY;
+                float y1 = baseY + (chunkZ * 16 + 16) * scaleY;
+                float minX = Math.min(x0, x1);
+                float maxX = Math.max(x0, x1);
+                float minY = Math.min(y0, y1);
+                float maxY = Math.max(y0, y1);
+
+                // cull what no rotation of the view could bring on screen
+                float closestX = Math.max(minX, Math.min(viewCenterX, maxX));
+                float closestY = Math.max(minY, Math.min(viewCenterY, maxY));
+                float deltaX = closestX - viewCenterX;
+                float deltaY = closestY - viewCenterY;
+                if (deltaX * deltaX + deltaY * deltaY > radiusSquared) continue;
+
+                // borders only on edges that face wilderness or foreign claims
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX, chunkZ - 1))) {
+                    fillFactionQuad(vertexBuffer, x0, y0, x1, y0 + lineThickness * Math.signum(scaleY), borderColor);
+                }
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX, chunkZ + 1))) {
+                    fillFactionQuad(vertexBuffer, x0, y1, x1, y1 - lineThickness * Math.signum(scaleY), borderColor);
+                }
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX - 1, chunkZ))) {
+                    fillFactionQuad(vertexBuffer, x0, y0, x0 + lineThickness * Math.signum(scaleX), y1, borderColor);
+                }
+                if (!chunks.contains(FactionClaimStore.chunkKey(chunkX + 1, chunkZ))) {
+                    fillFactionQuad(vertexBuffer, x1, y0, x1 - lineThickness * Math.signum(scaleX), y1, borderColor);
+                }
+            }
+        }
+        tessellator.draw();
+
+        // restore the state the callers had set before us: map textures are
+        // drawn with the textured program and the alpha-multiply blend func
+        OpenGL.glBlendFunc(OpenGL.GL11_GL_SRC_ALPHA, 0);
+        RenderSystem.setShader(GameRenderer::getPositionTexProgram);
+    }
+
+    /**
+     * Emits one axis aligned quad, normalizing the corners so callers can pass
+     * them in any order.
+     */
+    private static void fillFactionQuad(BufferBuilder buffer, float x0, float y0, float x1, float y1, int color) {
+        int red = color >> 16 & 255;
+        int green = color >> 8 & 255;
+        int blue = color & 255;
+        int alpha = color >>> 24;
+        float minX = Math.min(x0, x1);
+        float maxX = Math.max(x0, x1);
+        float minY = Math.min(y0, y1);
+        float maxY = Math.max(y0, y1);
+        buffer.vertex(minX, maxY, 1.0).color(red, green, blue, alpha).next();
+        buffer.vertex(maxX, maxY, 1.0).color(red, green, blue, alpha).next();
+        buffer.vertex(maxX, minY, 1.0).color(red, green, blue, alpha).next();
+        buffer.vertex(minX, minY, 1.0).color(red, green, blue, alpha).next();
     }
 
     private void drawWaypoint(DrawContext drawContext, MatrixStack matrixStack, Waypoint pt, TextureAtlas textureAtlas, int x, int y, int scScale, double lastXDouble, double lastZDouble, Sprite icon, Float r, Float g, Float b) {
@@ -1856,6 +2118,12 @@ public class Map implements Runnable, IChangeObserver {
         OpenGL.Utils.ldrawone(left + 256, top, 160.0, 1.0F, 0.0F);
         OpenGL.Utils.ldrawone(left, top, 160.0, 0.0F, 0.0F);
         OpenGL.Utils.drawPost();
+        int claimMultiFull = 1 << this.zoom;
+        float claimScaleFull = 256.0F / (32 * claimMultiFull);
+        this.drawFactionAreaOverlay(
+                left - (this.lastImageX - 16 * claimMultiFull) * claimScaleFull,
+                top - (this.lastImageZ - 16 * claimMultiFull) * claimScaleFull,
+                claimScaleFull, claimScaleFull, scWidth / 2.0F, scHeight / 2.0F, 190.0F);
         matrixStack.pop();
         RenderSystem.applyModelViewMatrix();
         if (this.options.biomeOverlay != 0) {
@@ -1886,6 +2154,11 @@ public class Map implements Runnable, IChangeObserver {
             RenderSystem.applyModelViewMatrix();
             OpenGL.glEnable(OpenGL.GL11_GL_DEPTH_TEST);
         }
+
+        // The fullscreen view is a plain square that never turns with the
+        // player, and covers four times the blocks per pixel of the minimap
+        this.drawOtherPlayerHeads(matrixStack, scWidth / 2.0F, scHeight / 2.0F,
+                this.zoomScale / 4.0, false, true, 128.0);
 
     }
 

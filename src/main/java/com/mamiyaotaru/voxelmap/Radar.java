@@ -2,6 +2,7 @@ package com.mamiyaotaru.voxelmap;
 
 import com.google.common.collect.Maps;
 import com.mamiyaotaru.voxelmap.interfaces.IRadar;
+import com.mamiyaotaru.voxelmap.players.PlayerPositionStore;
 import com.mamiyaotaru.voxelmap.textures.Sprite;
 import com.mamiyaotaru.voxelmap.textures.StitcherException;
 import com.mamiyaotaru.voxelmap.textures.TextureAtlas;
@@ -523,7 +524,17 @@ public class Radar implements IRadar {
     }
 
     private boolean isEntityShown(Entity entity) {
-        return entity != null && !entity.isInvisibleTo(VoxelConstants.getPlayer()) && (this.options.showHostiles && (this.options.radarAllowed || this.options.radarMobsAllowed) && this.isHostile(entity) || this.options.showPlayers && (this.options.radarAllowed || this.options.radarPlayersAllowed) && this.isPlayer(entity) || this.options.showNeutrals && this.options.radarMobsAllowed && this.isNeutral(entity));
+        if (entity == null || entity.isInvisibleTo(VoxelConstants.getPlayer())) {
+            return false;
+        }
+
+        // Players who ran /pv hide are kept off the radar as well as the map and
+        // the in world heads
+        if (entity instanceof PlayerEntity && PlayerPositionStore.isHidden(entity.getUuid())) {
+            return false;
+        }
+
+        return (this.options.showHostiles && (this.options.radarAllowed || this.options.radarMobsAllowed) && this.isHostile(entity) || this.options.showPlayers && (this.options.radarAllowed || this.options.radarPlayersAllowed) && this.isPlayer(entity) || this.options.showNeutrals && this.options.radarMobsAllowed && this.isNeutral(entity));
     }
 
     public void calculateMobs() {

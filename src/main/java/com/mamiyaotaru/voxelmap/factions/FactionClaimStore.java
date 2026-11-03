@@ -43,6 +43,10 @@ public final class FactionClaimStore {
         public final String name;
         /** Faction description as set by the faction, empty when unset. May contain § formatting codes. */
         public final String description;
+        /** Current total power, or -1 when synced from a server that doesn't send it. */
+        public final int power;
+        /** Number of members in the faction, or -1 when unknown. */
+        public final int memberCount;
         /** Faction color as 0xRRGGBB (white when the faction has no color). */
         public final int color;
         /** Dimension of the faction's home, or null when it has no home. */
@@ -50,16 +54,21 @@ public final class FactionClaimStore {
         public final double homeX;
         public final double homeZ;
         private final Map<String, Set<Long>> claimsByDimension;
+        private final Map<String, List<ClaimRun>> runsByDimension;
 
-        private FactionArea(String name, String description, int color, String homeDimension,
-                double homeX, double homeZ, Map<String, Set<Long>> claimsByDimension) {
+        private FactionArea(String name, String description, int power, int memberCount,
+                int color, String homeDimension, double homeX, double homeZ,
+                Map<String, Set<Long>> claimsByDimension) {
             this.name = name;
             this.description = description;
+            this.power = power;
+            this.memberCount = memberCount;
             this.color = color;
             this.homeDimension = homeDimension;
             this.homeX = homeX;
             this.homeZ = homeZ;
             this.claimsByDimension = claimsByDimension;
+            this.runsByDimension = buildRuns(claimsByDimension);
         }
 
         /**
@@ -69,6 +78,35 @@ public final class FactionClaimStore {
         public Set<Long> claimsIn(String dimension) {
             Set<Long> claims = claimsByDimension.get(dimension);
             return claims != null ? claims : Set.of();
+        }
+
+        /**
+         * Merged horizontal runs of claimed chunks in the given dimension, empty
+         * when the faction claims nothing there. Used to fill the area with one
+         * quad per run instead of one per chunk.
+         */
+        public List<ClaimRun> runsIn(String dimension) {
+            List<ClaimRun> runs = runsByDimension.get(dimension);
+            return runs != null ? runs : List.of();
+        }
+    }
+
+    /**
+     * A horizontal stretch of claimed chunks at one chunk row: every chunk from
+     * {@code chunkX0} to {@code chunkX1} inclusive is claimed at {@code chunkZ}.
+     *
+     * <p>Precomputed once per sync, so rendering does not have to rediscover
+     * neighbouring chunks every frame.
+     */
+    public static final class ClaimRun {
+        public final int chunkZ;
+        public final int chunkX0;
+        public final int chunkX1;
+
+        ClaimRun(int chunkZ, int chunkX0, int chunkX1) {
+            this.chunkZ = chunkZ;
+            this.chunkX0 = chunkX0;
+            this.chunkX1 = chunkX1;
         }
     }
 
@@ -142,6 +180,8 @@ public final class FactionClaimStore {
             String name = factionTag.getString("name");
             String description = factionTag.contains("description")
                     ? factionTag.getString("description") : "";
+            int power = factionTag.contains("power") ? factionTag.getInt("power") : -1;
+            int memberCount = factionTag.contains("members") ? factionTag.getInt("members") : -1;
             int color = factionTag.contains("color") ? factionTag.getInt("color") : -1;
             if (color < 0) color = 0xFFFFFF;
 
@@ -171,7 +211,7 @@ public final class FactionClaimStore {
             if (claims.isEmpty() && homeDimension == null) continue;
 
             FactionArea area = new FactionArea(name != null ? name : "???",
-                    description != null ? description : "", color,
+                    description != null ? description : "", power, memberCount, color,
                     homeDimension, homeX, homeZ, claims);
             for (String dimension : claims.keySet()) {
                 byDimension.computeIfAbsent(dimension, key -> new ArrayList<>()).add(area);
@@ -201,5 +241,44 @@ public final class FactionClaimStore {
 
     public static int chunkZ(long key) {
         return (int) key;
+    }
+
+    /**
+     * Groups the claimed chunks by row and merges horizontally adjacent ones
+     * into runs, so a solid region of claims can be drawn as a few wide quads
+     * rather than one quad per chunk.
+     */
+    private static Map<String, List<ClaimRun>> buildRuns(Map<String, Set<Long>> claimsByDimension) {
+        Map<String, List<ClaimRun>> runsByDimension = new HashMap<>();
+
+        for (Map.Entry<String, Set<Long>> entry : claimsByDimension.entrySet()) {
+            // Claimed x coordinates grouped by the row they sit in
+            Map<Integer, List<Integer>> rows = new HashMap<>();
+            for (long key : entry.getValue()) {
+                rows.computeIfAbsent(chunkZ(key), z -> new ArrayList<>()).add(chunkX(key));
+            }
+
+            List<ClaimRun> runs = new ArrayList<>();
+            for (Map.Entry<Integer, List<Integer>> row : rows.entrySet()) {
+                List<Integer> xs = row.getValue();
+                xs.sort(Integer::compare);
+
+                int runStart = xs.get(0);
+                int previous = runStart;
+                for (int i = 1; i < xs.size(); i++) {
+                    int x = xs.get(i);
+                    if (x != previous + 1) {
+                        runs.add(new ClaimRun(row.getKey(), runStart, previous));
+                        runStart = x;
+                    }
+                    previous = x;
+                }
+                runs.add(new ClaimRun(row.getKey(), runStart, previous));
+            }
+
+            runsByDimension.put(entry.getKey(), List.copyOf(runs));
+        }
+
+        return Map.copyOf(runsByDimension);
     }
 }

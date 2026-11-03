@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.mamiyaotaru.voxelmap.MapSettingsManager;
 import com.mamiyaotaru.voxelmap.VoxelConstants;
 import com.mamiyaotaru.voxelmap.factions.FactionClaimStore;
+import com.mamiyaotaru.voxelmap.players.PlayerHeadRenderer;
+import com.mamiyaotaru.voxelmap.players.PlayerPositionStore;
 import com.mamiyaotaru.voxelmap.persistent.ThreadManager;
 import com.mamiyaotaru.voxelmap.util.BiomeRepository;
 import com.mamiyaotaru.voxelmap.util.CommandUtils;
@@ -25,8 +27,11 @@ public class FabricModVoxelMap implements ClientModInitializer {
 
     public void onInitializeClient() {
         instance = this;
-        // Faction claim data synced by the Factions mod must not leak into the next server
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> FactionClaimStore.clear());
+        // Data synced by the Factions mod must not leak into the next server
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            FactionClaimStore.clear();
+            PlayerPositionStore.clear();
+        });
     }
 
     public void lateInit() {
@@ -85,6 +90,12 @@ public class FabricModVoxelMap implements ClientModInitializer {
             VoxelConstants.getLogger().error(exception);
         }
 
+        try {
+            // Heads of other players, billboarded above them like waypoints
+            PlayerHeadRenderer.renderPlayerHeads(partialTicks, matrixStack, withDepth, withoutDepth);
+        } catch (RuntimeException exception) {
+            VoxelConstants.getLogger().error(exception);
+        }
     }
 
     public void onShutDown() {
@@ -155,6 +166,11 @@ public class FabricModVoxelMap implements ClientModInitializer {
             } else if (channelName.equals(FactionClaimStore.CHANNEL)) {
                 // Faction claim snapshot from the Factions mod, drawn on the full screen map
                 FactionClaimStore.handlePayload(buffer);
+                return true;
+            } else if (channelName.equals(PlayerPositionStore.CHANNEL)) {
+                // Player position snapshot from the Factions mod, so players far
+                // beyond vanilla entity tracking still show up on the map
+                PlayerPositionStore.handlePayload(buffer);
                 return true;
             }
         }

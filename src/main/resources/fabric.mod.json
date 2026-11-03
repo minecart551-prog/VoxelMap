@@ -12,8 +12,10 @@
     "homepage": "https://minecraft.curseforge.com/projects/voxelmap"
   },
   "icon": "assets/voxelmap/icon.png",
-  "environment": "client",
   "entrypoints": {
+    "main": [
+      "com.mamiyaotaru.voxelmap.fabricmod.FabricModServer"
+    ],
     "client": [
       "com.mamiyaotaru.voxelmap.fabricmod.FabricModVoxelMap"
     ]

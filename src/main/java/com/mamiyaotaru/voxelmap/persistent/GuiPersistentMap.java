@@ -15,6 +15,7 @@ import com.mamiyaotaru.voxelmap.gui.overridden.Popup;
 import com.mamiyaotaru.voxelmap.gui.overridden.PopupGuiButton;
 import com.mamiyaotaru.voxelmap.gui.overridden.PopupGuiScreen;
 import com.mamiyaotaru.voxelmap.interfaces.AbstractMapData;
+import com.mamiyaotaru.voxelmap.players.PlayerPositionStore;
 import com.mamiyaotaru.voxelmap.textures.Sprite;
 import com.mamiyaotaru.voxelmap.textures.TextureAtlas;
 import com.mamiyaotaru.voxelmap.util.BackgroundImageInfo;
@@ -27,12 +28,15 @@ import com.mamiyaotaru.voxelmap.util.ItemWaypointRenderer;
 import com.mamiyaotaru.voxelmap.util.OpenGL;
 import com.mamiyaotaru.voxelmap.util.Waypoint;
 import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ConfirmScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
+import net.minecraft.client.network.ClientPlayNetworkHandler;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.network.ServerInfo;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.render.BufferBuilder;
@@ -61,6 +65,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
@@ -116,6 +121,15 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     private static int playerGLID;
     private static boolean gotSkin;
     private static int skinTries;
+    // Head marker size, 20% smaller than the original 40px
+    private static final float PLAYER_HEAD_SIZE = 32.0F;
+    // Face and hat region of a 64x64 skin, in normalized texture coordinates
+    private static final float SKIN_FACE_U0 = 8.0F / 64.0F;
+    private static final float SKIN_FACE_V0 = 8.0F / 64.0F;
+    private static final float SKIN_FACE_U1 = 16.0F / 64.0F;
+    private static final float SKIN_FACE_V1 = 16.0F / 64.0F;
+    private static final float SKIN_HAT_U0 = 40.0F / 64.0F;
+    private static final float SKIN_HAT_U1 = 48.0F / 64.0F;
     private boolean closed;
     private CachedRegion[] regions = new CachedRegion[0];
     BackgroundImageInfo backGroundImageInfo;
@@ -755,9 +769,6 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         float playerX = (float) GameVariableAccessShim.xCoordDouble();
         float playerZ = (float) GameVariableAccessShim.zCoordDouble();
 
-        OpenGL.Utils.disp2(playerGLID);
-        OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MIN_FILTER, OpenGL.GL11_GL_LINEAR);
-        OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MAG_FILTER, OpenGL.GL11_GL_LINEAR);
         if (this.oldNorth) {
             modelViewMatrixStack.push();
             modelViewMatrixStack.translate(playerX * this.mapToGui, playerZ * this.mapToGui, 0.0);
@@ -766,7 +777,15 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             RenderSystem.applyModelViewMatrix();
         }
 
-        this.drawTexturedModalRect(-20.0F / this.scScale + playerX * this.mapToGui, -20.0F / this.scScale + playerZ * this.mapToGui, 40.0F / this.scScale, 40.0F / this.scScale);
+        // Own head, 20% smaller than the original 40px marker
+        OpenGL.Utils.disp2(playerGLID);
+        OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MIN_FILTER, OpenGL.GL11_GL_LINEAR);
+        OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MAG_FILTER, OpenGL.GL11_GL_LINEAR);
+        this.drawTexturedModalRect(-(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + playerX * this.mapToGui, -(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + playerZ * this.mapToGui, PLAYER_HEAD_SIZE / this.scScale, PLAYER_HEAD_SIZE / this.scScale);
+
+        // Everyone else, same size, from the positions the server syncs
+        this.drawOtherPlayerHeads();
+
         if (this.oldNorth) {
             modelViewMatrixStack.pop();
             RenderSystem.applyModelViewMatrix();
@@ -1057,16 +1076,18 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         RenderSystem.defaultBlendFunc();
         RenderSystem.setShader(GameRenderer::getPositionColorProgram);
 
-        // Translucent fill for every claimed chunk
+        // Translucent fill, one quad per merged run of neighbouring chunks
         vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
         for (FactionArea area : areas) {
             int color = (FACTION_FILL_ALPHA << 24) | (area.color & 0xFFFFFF);
-            for (long key : area.claimsIn(dimension)) {
-                int blockX = FactionClaimStore.chunkX(key) * 16;
-                int blockZ = FactionClaimStore.chunkZ(key) * 16;
-                if (blockX + 16 < viewLeft || blockX > viewRight
-                        || blockZ + 16 < viewTop || blockZ > viewBottom) continue;
-                this.fillClaimQuad(vertexBuffer, blockX, blockZ, color);
+            for (FactionClaimStore.ClaimRun run : area.runsIn(dimension)) {
+                float x0 = run.chunkX0 * 16 * this.mapToGui;
+                float x1 = (run.chunkX1 + 1) * 16 * this.mapToGui;
+                float z0 = run.chunkZ * 16 * this.mapToGui;
+                float z1 = z0 + 16 * this.mapToGui;
+                if (x1 < viewLeft * this.mapToGui || x0 > viewRight * this.mapToGui
+                        || z1 < viewTop * this.mapToGui || z0 > viewBottom * this.mapToGui) continue;
+                this.fillClaimQuad(vertexBuffer, x0, z0, x1, z1, color);
             }
         }
         tessellator.draw();
@@ -1105,12 +1126,6 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         tessellator.draw();
 
         this.drawFactionHomes(drawContext, areas, dimension);
-    }
-
-    private void fillClaimQuad(BufferBuilder buffer, int blockX, int blockZ, int color) {
-        float x0 = blockX * this.mapToGui;
-        float z0 = blockZ * this.mapToGui;
-        this.fillClaimQuad(buffer, x0, z0, x0 + 16 * this.mapToGui, z0 + 16 * this.mapToGui, color);
     }
 
     private void fillClaimQuad(BufferBuilder buffer, float x0, float z0, float x1, float z1, int color) {
@@ -1237,38 +1252,33 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     private void drawFactionInfo(DrawContext drawContext) {
         if (this.selectedFaction == null || !this.options.showFactionAreas) return;
 
-        ClientWorld world = this.persistentMap.world;
-        if (world == null) {
+        if (this.persistentMap.world == null) {
             this.selectedFaction = null;
             return;
         }
 
-        // Snapshots are replaced on every resync; refresh from the live one and
-        // drop the selection if the faction disappeared in the meantime.
-        String dimension = world.getRegistryKey().getValue().toString();
-        FactionArea current = null;
-        for (FactionArea area : FactionClaimStore.getAreas(dimension)) {
-            if (area.name.equals(this.selectedFaction.name)) {
-                current = area;
-                break;
-            }
-        }
-        if (current == null) {
-            this.selectedFaction = null;
-            return;
-        }
-        this.selectedFaction = current;
+        // Selection is captured once when the click opens the box (from the
+        // synced snapshot), so nothing is looked up every frame.
+        FactionArea current = this.selectedFaction;
 
         TextRenderer font = this.getFontRenderer();
         int maxWidth = Math.min(160, this.getWidth() - 20);
         List<String> descriptionLines = current.description.isEmpty()
                 ? List.of() : this.wrapFactionText(font, current.description, maxWidth);
+        String powerLine = current.power >= 0 ? "Power: " + current.power : null;
+        String memberLine = current.memberCount >= 0 ? "Members: " + current.memberCount : null;
+
         int boxWidth = font.getWidth(current.name);
+        if (powerLine != null) boxWidth = Math.max(boxWidth, font.getWidth(powerLine));
+        if (memberLine != null) boxWidth = Math.max(boxWidth, font.getWidth(memberLine));
         for (String line : descriptionLines) {
             boxWidth = Math.max(boxWidth, font.getWidth(line));
         }
         boxWidth += 8;
-        int boxHeight = 4 + 9 + (descriptionLines.isEmpty() ? 0 : 2 + descriptionLines.size() * 9);
+        int boxHeight = 4 + 9;
+        if (powerLine != null) boxHeight += 9;
+        if (memberLine != null) boxHeight += 9;
+        if (!descriptionLines.isEmpty()) boxHeight += 2 + descriptionLines.size() * 9;
 
         int x = (int) this.factionClickX + 8;
         int y = (int) this.factionClickY + 8;
@@ -1281,7 +1291,16 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         drawContext.fill(x, y, x + boxWidth, y + boxHeight, 0xD0202028);
 
         drawContext.drawTextWithShadow(font, current.name, x + 4, y + 4, factionLabelColor(current.color));
-        int textY = y + 4 + 9 + 2;
+        int textY = y + 4 + 9;
+        if (powerLine != null) {
+            drawContext.drawTextWithShadow(font, powerLine, x + 4, textY, 0x55FF55);
+            textY += 9;
+        }
+        if (memberLine != null) {
+            drawContext.drawTextWithShadow(font, memberLine, x + 4, textY, 0xE0E0E0);
+            textY += 9;
+        }
+        if (!descriptionLines.isEmpty()) textY += 2;
         for (String line : descriptionLines) {
             drawContext.drawTextWithShadow(font, line, x + 4, textY, 0xE0E0E0);
             textY += 9;
@@ -1358,31 +1377,114 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         RenderSystem.enableBlend();
         OpenGL.glBlendFunc(OpenGL.GL11_GL_SRC_ALPHA, OpenGL.GL11_GL_ONE_MINUS_SRC_ALPHA);
 
-        // Two crisp cyan strokes form a simple chevron beyond the 20px skin radius.
+        // Two crisp cyan strokes form a simple chevron beyond the 16px head radius.
         this.drawChevronArms(centerX, centerY, 4.0F, 45, 225, 255, 255);
     }
 
     private void drawChevronArms(float centerX, float centerY, float thickness, int red, int green, int blue, int alpha) {
         float scale = 1.0F / this.scScale;
         float halfThickness = thickness * 0.5F * scale;
+        // Both arms rise 13px over 13px sideways, so each is an exact 45 degree
+        // diagonal and the arms meet at 90 degrees. That also matches the
+        // (plus-or-minus, plus-or-minus) corner offsets below, which are
+        // perpendicular to a 45 degree arm and nowhere else.
         float tipX = centerX;
-        float tipY = centerY - 42.0F * scale;
-        float leftX = centerX - 12.0F * scale;
-        float rightX = centerX + 12.0F * scale;
-        float tailY = centerY - 29.0F * scale;
+        float tipY = centerY - 38.0F * scale;
+        float leftX = centerX - 13.0F * scale;
+        float rightX = centerX + 13.0F * scale;
+        float tailY = centerY - 25.0F * scale;
         float normal = halfThickness * 0.70710677F;
 
         Tessellator tessellator = Tessellator.getInstance();
         BufferBuilder vertexBuffer = tessellator.getBuffer();
+        // Each arm's four corners are emitted walking around its outline, since
+        // a quad whose vertices jump across the shape renders as two wedges
+        // meeting at a point rather than as a straight stroke.
         vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
         vertexBuffer.vertex(leftX - normal, tailY - normal, 0).color(red, green, blue, alpha).next();
         vertexBuffer.vertex(leftX + normal, tailY + normal, 0).color(red, green, blue, alpha).next();
         vertexBuffer.vertex(tipX + normal, tipY + normal, 0).color(red, green, blue, alpha).next();
         vertexBuffer.vertex(tipX - normal, tipY - normal, 0).color(red, green, blue, alpha).next();
         vertexBuffer.vertex(tipX - normal, tipY + normal, 0).color(red, green, blue, alpha).next();
-        vertexBuffer.vertex(tipX + normal, tipY - normal, 0).color(red, green, blue, alpha).next();
         vertexBuffer.vertex(rightX - normal, tailY + normal, 0).color(red, green, blue, alpha).next();
         vertexBuffer.vertex(rightX + normal, tailY - normal, 0).color(red, green, blue, alpha).next();
+        vertexBuffer.vertex(tipX + normal, tipY - normal, 0).color(red, green, blue, alpha).next();
+        tessellator.draw();
+    }
+
+    /**
+     * Heads of every other player the server reported for the dimension the map
+     * is showing. Positions come from the synced snapshot rather than from
+     * nearby entities, so players show up no matter how far away they are.
+     */
+    private void drawOtherPlayerHeads() {
+        ClientWorld world = this.persistentMap.world;
+        if (world == null) return;
+
+        String dimension = world.getRegistryKey().getValue().toString();
+        MinecraftClient client = VoxelConstants.getMinecraft();
+        ClientPlayNetworkHandler networkHandler = client.getNetworkHandler();
+        UUID ownUUID = client.player != null ? client.player.getUuid() : null;
+
+        for (PlayerPositionStore.PlayerEntry entry : PlayerPositionStore.getEntries()) {
+            // /pv hide players are drawn nowhere
+            if (entry.hidden) continue;
+            // A head only belongs in the dimension it is standing in
+            if (!entry.dimension.equals(dimension)) continue;
+            if (entry.uuid.equals(ownUUID)) continue;
+            if (!this.isOnScreen((int) entry.x, (int) entry.z)) continue;
+
+            Identifier skin = DefaultSkinHelper.getTexture(entry.uuid);
+            if (networkHandler != null) {
+                PlayerListEntry listEntry = networkHandler.getPlayerListEntry(entry.uuid);
+                if (listEntry != null && listEntry.getSkinTexture() != null) {
+                    skin = listEntry.getSkinTexture();
+                }
+            }
+
+            float headX = (float) entry.x * this.mapToGui;
+            float headZ = (float) entry.z * this.mapToGui;
+            this.drawHeadIcon(skin, -(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + headX,
+                    -(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + headZ);
+        }
+    }
+
+    /** One player head, same size as the local player's marker. */
+    private void drawHeadIcon(Identifier skin, float x, float y) {
+        float size = PLAYER_HEAD_SIZE / this.scScale;
+        float border = 1.0F / this.scScale;
+
+        // Dark backing keeps heads readable over bright terrain
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+        this.drawSolidRect(x - border, y - border, size + 2.0F * border, size + 2.0F * border);
+
+        RenderSystem.setShader(GameRenderer::getPositionTexProgram);
+        RenderSystem.setShaderTexture(0, skin);
+        this.drawTexturedModalRect(x, y, size, size, SKIN_FACE_U0, SKIN_FACE_V0, SKIN_FACE_U1, SKIN_FACE_V1);
+        // The hat layer is a transparent overlay, so it goes right over the face
+        this.drawTexturedModalRect(x, y, size, size, SKIN_HAT_U0, SKIN_FACE_V0, SKIN_HAT_U1, SKIN_FACE_V1);
+    }
+
+    private void drawSolidRect(float x, float y, float width, float height) {
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        vertexBuffer.vertex(x, y + height, 0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        vertexBuffer.vertex(x + width, y + height, 0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        vertexBuffer.vertex(x + width, y, 0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        vertexBuffer.vertex(x, y, 0).color(0.0F, 0.0F, 0.0F, 1.0F).next();
+        tessellator.draw();
+    }
+
+    public void drawTexturedModalRect(float xCoord, float yCoord, float widthIn, float heightIn,
+            float u0, float v0, float u1, float v1) {
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE);
+        vertexBuffer.vertex(xCoord + 0.0F, yCoord + heightIn, 0).texture(u0, v1).next();
+        vertexBuffer.vertex(xCoord + widthIn, yCoord + heightIn, 0).texture(u1, v1).next();
+        vertexBuffer.vertex(xCoord + widthIn, yCoord + 0.0F, 0).texture(u1, v0).next();
+        vertexBuffer.vertex(xCoord + 0.0F, yCoord + 0.0F, 0).texture(u0, v0).next();
         tessellator.draw();
     }
 
