@@ -40,7 +40,6 @@ public class GuiAddWaypoint extends GuiScreenMinimap implements IPopupGuiScreen 
     protected final Waypoint waypoint;
     private boolean choosingColor;
     private boolean choosingIcon;
-    private boolean applyingPastedCoordinates;
     private final float red;
     private final float green;
     private final float blue;
@@ -77,16 +76,16 @@ public class GuiAddWaypoint extends GuiScreenMinimap implements IPopupGuiScreen 
         this.waypointX = new TextFieldWidget(this.getFontRenderer(), this.getWidth() / 2 - 100, this.getHeight() / 6 + 41 + 13, 56, 20, null);
         this.waypointX.setMaxLength(128);
         this.waypointX.setText(String.valueOf(this.waypoint.getX()));
-        this.waypointZ = new TextFieldWidget(this.getFontRenderer(), this.getWidth() / 2 - 28, this.getHeight() / 6 + 41 + 13, 56, 20, null);
-        this.waypointZ.setMaxLength(128);
-        this.waypointZ.setText(String.valueOf(this.waypoint.getZ()));
-        this.waypointY = new TextFieldWidget(this.getFontRenderer(), this.getWidth() / 2 + 44, this.getHeight() / 6 + 41 + 13, 56, 20, null);
+        this.waypointY = new TextFieldWidget(this.getFontRenderer(), this.getWidth() / 2 - 28, this.getHeight() / 6 + 41 + 13, 56, 20, null);
         this.waypointY.setMaxLength(128);
         this.waypointY.setText(String.valueOf(this.waypoint.getY()));
+        this.waypointZ = new TextFieldWidget(this.getFontRenderer(), this.getWidth() / 2 + 44, this.getHeight() / 6 + 41 + 13, 56, 20, null);
+        this.waypointZ.setMaxLength(128);
+        this.waypointZ.setText(String.valueOf(this.waypoint.getZ()));
         this.addDrawableChild(this.waypointName);
         this.addDrawableChild(this.waypointX);
-        this.addDrawableChild(this.waypointZ);
         this.addDrawableChild(this.waypointY);
+        this.addDrawableChild(this.waypointZ);
         int buttonListY = this.getHeight() / 6 + 82 + 6;
         this.addDrawableChild(this.buttonEnabled = new PopupGuiButton(this.getWidth() / 2 - 101, buttonListY, 100, 20, Text.literal("Enabled: " + (this.waypoint.enabled ? "On" : "Off")), button -> this.waypoint.enabled = !this.waypoint.enabled, this));
         this.addDrawableChild(new PopupGuiButton(this.getWidth() / 2 - 101, buttonListY + 24, 100, 20, Text.literal(I18n.translate("minimap.waypoints.sortbycolor") + ":     "), button -> this.choosingColor = true, this));
@@ -104,23 +103,54 @@ public class GuiAddWaypoint extends GuiScreenMinimap implements IPopupGuiScreen 
     }
 
     private void coordinateTextChanged(String text) {
-        if (!this.applyingPastedCoordinates) {
-            String[] coordinates = text.trim().split("\\s+");
-            if (coordinates.length == 3 && isInteger(coordinates[0])
-                    && isInteger(coordinates[1]) && isInteger(coordinates[2])) {
-                this.applyingPastedCoordinates = true;
-                try {
-                    // Pasted coordinates use Minecraft's standard X Y Z order. The screen's
-                    // visual field order is X Z Y, so route each value to its labelled field.
-                    this.waypointX.setText(coordinates[0]);
-                    this.waypointY.setText(coordinates[1]);
-                    this.waypointZ.setText(coordinates[2]);
-                } finally {
-                    this.applyingPastedCoordinates = false;
-                }
-            }
-        }
         this.updateDoneButton();
+    }
+
+    /**
+     * Reads the clipboard and, when it holds coordinates ("213 44 -34", "213, 44, -34", or the
+     * legacy "213, -34"), wipes the three coordinate boxes and refills them in X Y Z order.
+     *
+     * @return true when the clipboard was consumed as coordinates
+     */
+    private boolean pasteCoordinatesFromClipboard() {
+        int[] coordinates = parseCoordinates(VoxelConstants.getMinecraft().keyboard.getClipboard());
+        if (coordinates == null) {
+            return false;
+        }
+
+        this.waypointX.setText(Integer.toString(coordinates[0]));
+        this.waypointY.setText(Integer.toString(coordinates[1]));
+        this.waypointZ.setText(Integer.toString(coordinates[2]));
+        this.updateDoneButton();
+        return true;
+    }
+
+    /**
+     * Accepts two or three whitespace/comma separated integers. Three values are X Y Z, two values
+     * are X Z and keep the Y currently in the box.
+     *
+     * @return {x, y, z}, or null when the text isn't coordinates
+     */
+    private int[] parseCoordinates(String text) {
+        if (text == null) {
+            return null;
+        }
+
+        String[] values = text.trim().split("[\\s,]+");
+        if (values.length < 2 || values.length > 3) {
+            return null;
+        }
+
+        try {
+            int x = Integer.parseInt(values[0]);
+            if (values.length == 3) {
+                return new int[]{x, Integer.parseInt(values[1]), Integer.parseInt(values[2])};
+            }
+
+            return new int[]{x, Integer.parseInt(this.waypointY.getText()), Integer.parseInt(values[1])};
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private static boolean isInteger(String value) {
@@ -183,6 +213,12 @@ public class GuiAddWaypoint extends GuiScreenMinimap implements IPopupGuiScreen 
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         boolean OK = false;
         if (this.popupOpen()) {
+            // Ctrl+V with "213 44 -34" on the clipboard fills all three boxes instead of letting
+            // the focused box swallow the raw text.
+            if (isPaste(keyCode) && this.pasteCoordinatesFromClipboard()) {
+                return true;
+            }
+
             OK = super.keyPressed(keyCode, scanCode, modifiers);
             boolean acceptable = !this.waypointName.getText().isEmpty();
 
@@ -322,12 +358,12 @@ public class GuiAddWaypoint extends GuiScreenMinimap implements IPopupGuiScreen 
         drawContext.drawCenteredTextWithShadow(this.getFontRenderer(), (this.parentGui == null || !this.parentGui.isEditing()) && !this.editing ? I18n.translate("minimap.waypoints.new") : I18n.translate("minimap.waypoints.edit"), this.getWidth() / 2, 20, 16777215);
         drawContext.drawTextWithShadow(this.getFontRenderer(), I18n.translate("minimap.waypoints.name"), this.getWidth() / 2 - 100, this.getHeight() / 6, 10526880);
         drawContext.drawTextWithShadow(this.getFontRenderer(), I18n.translate("X"), this.getWidth() / 2 - 100, this.getHeight() / 6 + 41, 10526880);
-        drawContext.drawTextWithShadow(this.getFontRenderer(), I18n.translate("Z"), this.getWidth() / 2 - 28, this.getHeight() / 6 + 41, 10526880);
-        drawContext.drawTextWithShadow(this.getFontRenderer(), I18n.translate("Y"), this.getWidth() / 2 + 44, this.getHeight() / 6 + 41, 10526880);
+        drawContext.drawTextWithShadow(this.getFontRenderer(), I18n.translate("Y"), this.getWidth() / 2 - 28, this.getHeight() / 6 + 41, 10526880);
+        drawContext.drawTextWithShadow(this.getFontRenderer(), I18n.translate("Z"), this.getWidth() / 2 + 44, this.getHeight() / 6 + 41, 10526880);
         this.waypointName.render(drawContext, mouseX, mouseY, delta);
         this.waypointX.render(drawContext, mouseX, mouseY, delta);
-        this.waypointZ.render(drawContext, mouseX, mouseY, delta);
         this.waypointY.render(drawContext, mouseX, mouseY, delta);
+        this.waypointZ.render(drawContext, mouseX, mouseY, delta);
         int buttonListY = this.getHeight() / 6 + 82 + 6;
         super.render(drawContext, mouseX, mouseY, delta);
         OpenGL.glColor4f(this.waypoint.red, this.waypoint.green, this.waypoint.blue, 1.0F);

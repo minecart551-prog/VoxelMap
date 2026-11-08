@@ -2282,15 +2282,12 @@ public class Map implements Runnable, IChangeObserver {
             float scale = unicode ? 0.65F : 0.5F;
             matrixStack.push();
             matrixStack.scale(scale, scale, 1.0F);
-            String xy = this.dCoord(GameVariableAccessShim.xCoord()) + ", " + this.dCoord(GameVariableAccessShim.zCoord());
+            String xy = this.dCoord(GameVariableAccessShim.xCoord()) + ", " + this.dCoord(GameVariableAccessShim.yCoord()) + ", " + this.dCoord(GameVariableAccessShim.zCoord());
             int m = this.chkLen(xy) / 2;
-            this.write(drawContext, xy, x / scale - m, textStart / scale, 16777215); //X, Z
-            xy = Integer.toString(GameVariableAccessShim.yCoord());
-            m = this.chkLen(xy) / 2;
-            this.write(drawContext, xy, x / scale - m, textStart / scale + 10.0F, 16777215); //Y
+            this.write(drawContext, xy, x / scale - m, textStart / scale, 16777215); //X, Y, Z
             if (this.ztimer > 0) {
                 m = this.chkLen(this.error) / 2;
-                this.write(drawContext, this.error, x / scale - m, textStart / scale + 19.0F, 16777215); //WORLD NAME
+                this.write(drawContext, this.error, x / scale - m, textStart / scale + 10.0F, 16777215); //WORLD NAME
             }
 
             matrixStack.pop();

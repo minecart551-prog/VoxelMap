@@ -447,7 +447,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                     z = (int) Math.floor(this.mapCenterZ);
                 }
 
-                this.coordinates.setText(x + ", " + z);
+                this.coordinates.setText(x + ", " + GameVariableAccessShim.yCoord() + ", " + z);
                 this.coordinates.setEditableColor(16777215);
             }
 
@@ -477,12 +477,20 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
 
         this.clearPopups();
         if (this.editingCoordinates) {
-            this.coordinates.keyPressed(keyCode, scanCode, modifiers);
+            // Ctrl+V replaces whatever is in the box with the pasted coordinates instead of
+            // letting the raw text splice into the middle of the current contents.
+            String pastedCoordinates = isPaste(keyCode) ? normalizedCoordinates(VoxelConstants.getMinecraft().keyboard.getClipboard()) : null;
+            if (pastedCoordinates != null) {
+                this.coordinates.setText(pastedCoordinates);
+            } else {
+                this.coordinates.keyPressed(keyCode, scanCode, modifiers);
+            }
+
             boolean isGood = this.isAcceptable(this.coordinates.getText());
             this.coordinates.setEditableColor(isGood ? 16777215 : 16711680);
             if ((keyCode == 257 || keyCode == 335) && this.coordinates.isFocused() && isGood) {
-                String[] xz = this.coordinates.getText().split(",");
-                this.centerAt(Integer.parseInt(xz[0].trim()), Integer.parseInt(xz[1].trim()));
+                int[] xz = centerFrom(this.coordinates.getText());
+                this.centerAt(xz[0], xz[1]);
                 this.editingCoordinates = false;
                 this.lastEditingCoordinates = false;
                 this.switchToKeyboardInput();
@@ -511,8 +519,8 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             boolean isGood = this.isAcceptable(this.coordinates.getText());
             this.coordinates.setEditableColor(isGood ? 16777215 : 16711680);
             if (chr == '\r' && this.coordinates.isFocused() && isGood) {
-                String[] xz = this.coordinates.getText().split(",");
-                this.centerAt(Integer.parseInt(xz[0].trim()), Integer.parseInt(xz[1].trim()));
+                int[] xz = centerFrom(this.coordinates.getText());
+                this.centerAt(xz[0], xz[1]);
                 this.editingCoordinates = false;
                 this.lastEditingCoordinates = false;
                 this.switchToKeyboardInput();
@@ -527,13 +535,64 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     }
 
     private boolean isAcceptable(String input) {
+        return centerFrom(input) != null;
+    }
+
+    /**
+     * Splits coordinate text on commas and/or whitespace, so "213, -34", "213 44 -34" and
+     * "213, 44, -34" all work.
+     *
+     * @return the 2 or 3 values, or null when the text isn't coordinates
+     */
+    private static String[] splitCoordinates(String text) {
+        if (text == null) {
+            return null;
+        }
+
+        String[] values = text.trim().split("[\\s,]+");
+        return values.length == 2 || values.length == 3 ? values : null;
+    }
+
+    /**
+     * @return {x, z} from coordinate text in X Z or X Y Z order, or null when it isn't coordinates
+     */
+    private static int[] centerFrom(String text) {
+        String[] values = splitCoordinates(text);
+        if (values == null) {
+            return null;
+        }
+
         try {
-            String[] xz = this.coordinates.getText().split(",");
-            Integer.valueOf(xz[0].trim());
-            Integer.valueOf(xz[1].trim());
-            return true;
-        } catch (NumberFormatException | ArrayIndexOutOfBoundsException var3) {
-            return false;
+            Integer.parseInt(values[0]);
+            if (values.length == 3) {
+                Integer.parseInt(values[1]);
+            }
+
+            return new int[]{Integer.parseInt(values[0]), Integer.parseInt(values[values.length - 1])};
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * @return the coordinate text rewritten in "x, y, z" ("x, z" for two values), or null
+     */
+    private static String normalizedCoordinates(String text) {
+        String[] values = splitCoordinates(text);
+        if (values == null) {
+            return null;
+        }
+
+        try {
+            int x = Integer.parseInt(values[0]);
+            int z = Integer.parseInt(values[values.length - 1]);
+            if (values.length == 3) {
+                return x + ", " + Integer.parseInt(values[1]) + ", " + z;
+            }
+
+            return x + ", " + z;
+        } catch (NumberFormatException ignored) {
+            return null;
         }
     }
 
