@@ -37,10 +37,16 @@ import net.minecraft.util.math.Vec3d;
  * periodic updates.
  */
 public final class PlayerHeadRenderer {
-    /** World units across; similar in size to a waypoint icon. */
+    /** World units across at {@link #SIZE_REFERENCE_DISTANCE}, similar in size to a waypoint icon. */
     private static final float HEAD_SIZE = 0.5F;
-    /** Offset above the feet, so the head sits over the player's own head. */
-    private static final double HEAD_HEIGHT = 1.85;
+    /**
+     * The distance the icon's size is locked to. Perspective shrinks anything with
+     * distance, so the icon is grown by the same factor to keep it the same size on
+     * screen no matter how far away the player is.
+     */
+    private static final double SIZE_REFERENCE_DISTANCE = 20.0;
+    /** Offset above the feet, so the icon sits low, over the player's own head. */
+    private static final double HEAD_HEIGHT = 1.0;
 
     // Face and hat layer of a 64x64 skin, in normalized texture coordinates
     private static final float FACE_U0 = 8.0F / 64.0F;
@@ -50,8 +56,11 @@ public final class PlayerHeadRenderer {
     private static final float HAT_U0 = 40.0F / 64.0F;
     private static final float HAT_U1 = 48.0F / 64.0F;
 
-    /** Alpha of the "through walls" copy of the head, matching waypoint icons. */
-    private static final float SEE_THROUGH_ALPHA = 0.3F;
+    /**
+     * Alpha of the "through walls" copy of the head. Heads are drawn fully opaque,
+     * including the copy that shows through terrain.
+     */
+    private static final float SEE_THROUGH_ALPHA = 1.0F;
 
     private PlayerHeadRenderer() {}
 
@@ -117,7 +126,12 @@ public final class PlayerHeadRenderer {
                 -client.getEntityRenderDispatcher().camera.getYaw()));
         matrixStack.multiply(RotationAxis.POSITIVE_X.rotationDegrees(
                 client.getEntityRenderDispatcher().camera.getPitch()));
-        matrixStack.scale(-HEAD_SIZE, -HEAD_SIZE, -HEAD_SIZE);
+        // Constant size on screen: perspective divides projected size by distance, so
+        // growing the icon by that same distance cancels it out. Floored at one block so
+        // a head right on top of the camera does not collapse to nothing.
+        double distance = Math.max(Math.sqrt(x * x + y * y + z * z), 1.0);
+        float scale = (float) (HEAD_SIZE * distance / SIZE_REFERENCE_DISTANCE);
+        matrixStack.scale(-scale, -scale, -scale);
         Matrix4f matrix4f = matrixStack.peek().getPositionMatrix();
 
         RenderSystem.setShader(GameRenderer::getPositionTexColorProgram);

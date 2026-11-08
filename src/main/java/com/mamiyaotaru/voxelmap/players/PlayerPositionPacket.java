@@ -8,6 +8,7 @@ import java.util.zip.GZIPOutputStream;
 import io.netty.buffer.Unpooled;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtElement;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtList;
 import net.minecraft.network.PacketByteBuf;
@@ -76,8 +77,11 @@ public final class PlayerPositionPacket {
     }
 
     public static void sendTo(ServerPlayerEntity player, NbtCompound root) {
-        if (!ServerPlayNetworking.canSend(player, CHANNEL)) return;
-
+        // Deliberately not gated on ServerPlayNetworking.canSend(): the client reads
+        // this channel through a mixin on ClientPlayNetworkHandler instead of a Fabric
+        // receiver, so it never declares the channel and canSend() would always be false,
+        // which silently dropped every snapshot. Sent unconditionally, exactly like the
+        // factions claim sync; clients without VoxelMap just ignore the payload.
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(bytes))) {
@@ -85,8 +89,19 @@ public final class PlayerPositionPacket {
             }
             PacketByteBuf buf = new PacketByteBuf(Unpooled.wrappedBuffer(bytes.toByteArray()));
             ServerPlayNetworking.send(player, CHANNEL, buf);
+            logFirstSend(root);
         } catch (IOException e) {
             LOGGER.warn("Could not send player positions", e);
         }
+    }
+
+    /** One line per server run, so it is obvious in the log that sync is alive. */
+    private static volatile boolean loggedOnce;
+
+    private static void logFirstSend(NbtCompound root) {
+        if (loggedOnce) return;
+        loggedOnce = true;
+        int players = root.getList("players", NbtElement.COMPOUND_TYPE).size();
+        LOGGER.info("VoxelMap player position sync active: broadcasting " + players + " player(s) to every client");
     }
 }

@@ -121,8 +121,8 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     private static int playerGLID;
     private static boolean gotSkin;
     private static int skinTries;
-    // Head marker size, 20% smaller than the original 40px
-    private static final float PLAYER_HEAD_SIZE = 32.0F;
+    // Head marker size: the original 40px, 20% smaller, then 10% smaller twice
+    private static final float PLAYER_HEAD_SIZE = 25.92F;
     // Face and hat region of a 64x64 skin, in normalized texture coordinates
     private static final float SKIN_FACE_U0 = 8.0F / 64.0F;
     private static final float SKIN_FACE_V0 = 8.0F / 64.0F;
@@ -1508,20 +1508,33 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         }
     }
 
-    /** One player head, same size as the local player's marker. */
+    /**
+     * One player head, sized to land on the local player's marker exactly.
+     *
+     * <p>That marker is not a bare face: {@link #getSkin()} crops the 8x8 face,
+     * scales it to 16x16, {@code ImageUtils.pad} frames it to 22x22 and
+     * {@code fillOutline} paints a 1px black ring inside that frame. Drawn into a
+     * {@link #PLAYER_HEAD_SIZE} box, the face therefore covers only 16/22 of it,
+     * with the black ring at 16/22..18/22. Drawing the face across the whole box
+     * instead would make these heads about a third bigger than the local one, so
+     * the same fractions are reproduced here.
+     */
     private void drawHeadIcon(Identifier skin, float x, float y) {
         float size = PLAYER_HEAD_SIZE / this.scScale;
-        float border = 1.0F / this.scScale;
+        float face = size * (16.0F / 22.0F);
+        float ring = size * (1.0F / 22.0F);
+        float faceX = x + (size - face) / 2.0F;
+        float faceY = y + (size - face) / 2.0F;
 
-        // Dark backing keeps heads readable over bright terrain
+        // Black ring, standing in for the outline baked into the local marker
         RenderSystem.setShader(GameRenderer::getPositionColorProgram);
-        this.drawSolidRect(x - border, y - border, size + 2.0F * border, size + 2.0F * border);
+        this.drawSolidRect(faceX - ring, faceY - ring, face + 2.0F * ring, face + 2.0F * ring);
 
         RenderSystem.setShader(GameRenderer::getPositionTexProgram);
         RenderSystem.setShaderTexture(0, skin);
-        this.drawTexturedModalRect(x, y, size, size, SKIN_FACE_U0, SKIN_FACE_V0, SKIN_FACE_U1, SKIN_FACE_V1);
+        this.drawTexturedModalRect(faceX, faceY, face, face, SKIN_FACE_U0, SKIN_FACE_V0, SKIN_FACE_U1, SKIN_FACE_V1);
         // The hat layer is a transparent overlay, so it goes right over the face
-        this.drawTexturedModalRect(x, y, size, size, SKIN_HAT_U0, SKIN_FACE_V0, SKIN_HAT_U1, SKIN_FACE_V1);
+        this.drawTexturedModalRect(faceX, faceY, face, face, SKIN_HAT_U0, SKIN_FACE_V0, SKIN_HAT_U1, SKIN_FACE_V1);
     }
 
     private void drawSolidRect(float x, float y, float width, float height) {

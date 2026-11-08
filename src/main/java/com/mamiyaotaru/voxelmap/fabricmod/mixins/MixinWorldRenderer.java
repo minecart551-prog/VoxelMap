@@ -2,6 +2,7 @@ package com.mamiyaotaru.voxelmap.fabricmod.mixins;
 
 import com.mamiyaotaru.voxelmap.VoxelConstants;
 import com.mamiyaotaru.voxelmap.fabricmod.FabricModVoxelMap;
+import com.mamiyaotaru.voxelmap.players.PlayerPositionStore;
 import com.mamiyaotaru.voxelmap.util.OpenGL;
 import com.mojang.blaze3d.platform.GlStateManager;
 import net.minecraft.client.gl.Framebuffer;
@@ -25,7 +26,9 @@ public class MixinWorldRenderer {
 
     @Inject(method = "render", at = @At("RETURN"))
     private void postRender(MatrixStack matrices, float tickDelta, long limitTime, boolean renderBlockOutline, Camera camera, GameRenderer gameRenderer, LightmapTextureManager lightmapTextureManager, Matrix4f positionMatrix, CallbackInfo ci) {
-        if (VoxelConstants.getVoxelMapInstance().getMapOptions().showBeacons || VoxelConstants.getVoxelMapInstance().getMapOptions().showWaypoints) {
+        // Player heads are their own feature, so they also run when the waypoint
+        // signs and beacons are both toggled off
+        if (VoxelConstants.getVoxelMapInstance().getMapOptions().showBeacons || VoxelConstants.getVoxelMapInstance().getMapOptions().showWaypoints || !PlayerPositionStore.getEntries().isEmpty()) {
             if (VoxelConstants.isFabulousGraphicsOrBetter()) {
                 Framebuffer framebuffer = VoxelConstants.getMinecraft().getFramebuffer();
                 GlStateManager._glBindFramebuffer(OpenGL.GL30_GL_READ_FRAMEBUFFER, this.translucentFramebuffer.fbo);
@@ -41,7 +44,7 @@ public class MixinWorldRenderer {
 
     @Inject(method = "renderLayer", at = @At("RETURN"))
     private void postRenderLayer(RenderLayer renderLayer, MatrixStack matrixStack, double x, double y, double z, Matrix4f matrix4f, CallbackInfo ci) {
-        if (VoxelConstants.isFabulousGraphicsOrBetter() && VoxelConstants.getVoxelMapInstance().getMapOptions().showWaypoints && renderLayer == RenderLayer.getTranslucent() && VoxelConstants.getMinecraft().worldRenderer.getTranslucentFramebuffer() != null) {
+        if (VoxelConstants.isFabulousGraphicsOrBetter() && (VoxelConstants.getVoxelMapInstance().getMapOptions().showWaypoints || !PlayerPositionStore.getEntries().isEmpty()) && renderLayer == RenderLayer.getTranslucent() && VoxelConstants.getMinecraft().worldRenderer.getTranslucentFramebuffer() != null) {
             VoxelConstants.getMinecraft().worldRenderer.getTranslucentFramebuffer().beginWrite(false);
             FabricModVoxelMap.onRenderHand(VoxelConstants.getMinecraft().getTickDelta(), 0L, matrixStack, false, true, true, false);
             VoxelConstants.getMinecraft().getFramebuffer().beginWrite(false);

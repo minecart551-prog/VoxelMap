@@ -114,6 +114,16 @@ public final class PlayerPositionStore {
         }
 
         entries = List.copyOf(parsed);
+        logFirstUpdate(parsed.size());
+    }
+
+    /** One line per session, so the log shows the snapshot actually arrived. */
+    private static volatile boolean loggedOnce;
+
+    private static void logFirstUpdate(int players) {
+        if (loggedOnce) return;
+        loggedOnce = true;
+        VoxelConstants.getLogger().info("Player position sync received: " + players + " player(s)");
     }
 
     public static List<PlayerEntry> getEntries() {
