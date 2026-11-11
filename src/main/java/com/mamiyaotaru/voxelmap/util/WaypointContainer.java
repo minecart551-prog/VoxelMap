@@ -242,11 +242,13 @@ public class WaypointContainer {
         if (withoutDepth) {
             OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
             OpenGL.glDepthMask(false);
+            // the highlighted marker is drawn solid, not as a see-through ghost
+            float ghostAlpha = target ? 1.0F : 0.3F * fade;
             vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE_COLOR);
-            vertexBuffer.vertex(matrix4f, -width, -width, 0.0F).texture(icon.getMinU(), icon.getMinV()).color(r, g, b, 0.3F * fade).next();
-            vertexBuffer.vertex(matrix4f, -width, width, 0.0F).texture(icon.getMinU(), icon.getMaxV()).color(r, g, b, 0.3F * fade).next();
-            vertexBuffer.vertex(matrix4f, width, width, 0.0F).texture(icon.getMaxU(), icon.getMaxV()).color(r, g, b, 0.3F * fade).next();
-            vertexBuffer.vertex(matrix4f, width, -width, 0.0F).texture(icon.getMaxU(), icon.getMinV()).color(r, g, b, 0.3F * fade).next();
+            vertexBuffer.vertex(matrix4f, -width, -width, 0.0F).texture(icon.getMinU(), icon.getMinV()).color(r, g, b, ghostAlpha).next();
+            vertexBuffer.vertex(matrix4f, -width, width, 0.0F).texture(icon.getMinU(), icon.getMaxV()).color(r, g, b, ghostAlpha).next();
+            vertexBuffer.vertex(matrix4f, width, width, 0.0F).texture(icon.getMaxU(), icon.getMaxV()).color(r, g, b, ghostAlpha).next();
+            vertexBuffer.vertex(matrix4f, width, -width, 0.0F).texture(icon.getMaxU(), icon.getMinV()).color(r, g, b, ghostAlpha).next();
             tessellator.draw();
         }
 

@@ -31,11 +31,17 @@ public final class ItemWaypointRenderer {
         }
         RenderSystem.setShaderColor(1.0F, 1.0F, 1.0F, 1.0F);
         OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+        // draw with depth off so the names drawn later (and the map popup, which
+        // draws even later) always render above the item, regardless of depth state
+        OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
+        OpenGL.glDepthMask(false);
         context.getMatrices().push();
-        context.getMatrices().translate(centerX - size / 2.0F, centerY - size / 2.0F, 200.0F);
+        context.getMatrices().translate(centerX - size / 2.0F, centerY - size / 2.0F, 0.0F);
         float scale = size / 16.0F;
         context.getMatrices().scale(scale, scale, 1.0F);
         context.drawItem(stack, 0, 0);
         context.getMatrices().pop();
+        OpenGL.glDepthMask(true);
+        OpenGL.glEnable(OpenGL.GL11_GL_DEPTH_TEST);
     }
 }

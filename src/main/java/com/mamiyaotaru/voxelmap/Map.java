@@ -2015,7 +2015,7 @@ public class Map implements Runnable, IChangeObserver {
                 OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MIN_FILTER, OpenGL.GL11_GL_LINEAR);
                 OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MAG_FILTER, OpenGL.GL11_GL_LINEAR);
                 OpenGL.Utils.drawPre();
-                OpenGL.Utils.setMap(icon, x, y, 16.0F);
+                OpenGL.Utils.setMap(icon, x, y, 12.8F);
                 OpenGL.Utils.drawPost();
             } catch (Exception var40) {
                 this.error = "Error: marker overlay not found!";
@@ -2052,7 +2052,7 @@ public class Map implements Runnable, IChangeObserver {
                 OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MIN_FILTER, OpenGL.GL11_GL_LINEAR);
                 OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MAG_FILTER, OpenGL.GL11_GL_LINEAR);
                 OpenGL.Utils.drawPre();
-                OpenGL.Utils.setMap(icon, x, y, 16.0F);
+                OpenGL.Utils.setMap(icon, x, y, 12.8F);
                 OpenGL.Utils.drawPost();
             } catch (Exception var42) {
                 this.error = "Error: waypoint overlay not found!";

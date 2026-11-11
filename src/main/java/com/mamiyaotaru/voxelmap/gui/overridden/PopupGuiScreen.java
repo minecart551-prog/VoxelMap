@@ -18,7 +18,9 @@ public abstract class PopupGuiScreen extends GuiScreenMinimap implements IPopupG
         boolean clicked = false;
         ArrayList<Popup> deadPopups = new ArrayList<>();
 
-        for (Popup popup : this.popups) {
+        // Snapshot: popup actions may clearPopups() (e.g. opening the waypoint
+        // editor overlay), which must not disturb this iteration.
+        for (Popup popup : new ArrayList<>(this.popups)) {
             boolean clickedPopup = popup.clickedMe(x, y);
             if (!clickedPopup) {
                 deadPopups.add(popup);

@@ -5,7 +5,6 @@ import com.mamiyaotaru.voxelmap.util.OpenGL;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.render.BufferBuilder;
 import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.Tessellator;
@@ -18,6 +17,12 @@ import org.joml.Matrix4f;
 import java.util.ArrayList;
 
 public class Popup {
+    private static final float TEXT_SCALE = 0.8F;
+    private static final int PANEL_GRAY = 15;
+    private static final int PANEL_ALPHA = 190;
+    private static final int EXTRA_WIDTH = 10;
+    private static final int LINE_GRAY = 150;
+    private static final int HOVER_ALPHA = 46; // ~18% white hover wash over the option row
     final TextRenderer fontRendererObj;
     int x;
     int y;
@@ -30,7 +35,14 @@ public class Popup {
     public final int clickedDirectY;
     boolean shouldClose;
     final PopupGuiScreen parentGui;
-    final int padding = 6;
+    final int padding = 2;
+    final int entryHeight = 13;
+    final int lineGap = 2;
+    final int textTopOffset = 3;
+
+    private int rowTop(int t) {
+        return this.y + this.padding + t * (this.entryHeight + this.lineGap);
+    }
 
     public Popup(int x, int y, int directX, int directY, ArrayList<PopupEntry> entries, PopupGuiScreen parentGui) {
         this.fontRendererObj = VoxelConstants.getMinecraft().textRenderer;
@@ -43,17 +55,17 @@ public class Popup {
         this.y = y - 1;
         this.entries = new PopupEntry[entries.size()];
         entries.toArray(this.entries);
-        this.w = 0;
-        this.h = this.entries.length * 20;
+        // bottom padding is 1: the box ends one pixel higher than it used to
+        this.h = this.padding + 1 + this.entries.length * this.entryHeight + Math.max(0, this.entries.length - 1) * this.lineGap;
 
         for (PopupEntry entry : this.entries) {
-            int entryWidth = this.fontRendererObj.getWidth(entry.name);
+            int entryWidth = (int) Math.ceil(this.fontRendererObj.getWidth(entry.name) * TEXT_SCALE);
             if (entryWidth > this.w) {
                 this.w = entryWidth;
             }
         }
 
-        this.w += this.padding * 2;
+        this.w += this.padding * 2 + EXTRA_WIDTH;
         if (x + this.w > parentGui.width) {
             this.x = x - this.w + 2;
         }
@@ -69,7 +81,8 @@ public class Popup {
         if (clicked) {
             for (int t = 0; t < this.entries.length; ++t) {
                 if (this.entries[t].enabled) {
-                    boolean entryClicked = mouseX >= this.x && mouseX <= (this.x + this.w) && mouseY >= (this.y + t * 20) && mouseY <= (this.y + (t + 1) * 20);
+                    int rowTop = this.rowTop(t);
+                    boolean entryClicked = mouseX >= this.x && mouseX <= (this.x + this.w) && mouseY >= rowTop && mouseY <= (rowTop + this.entryHeight);
                     if (entryClicked) {
                         this.shouldClose = this.entries[t].causesClose;
                         this.parentGui.popupAction(this, this.entries[t].action);
@@ -89,53 +102,90 @@ public class Popup {
         return this.shouldClose;
     }
 
+    private static void addBorder(BufferBuilder vertexBuffer, int x, int y, int w, int h) {
+        // top and bottom edge
+        vertexBuffer.vertex(x, y + 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w, y + 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w, y + h - 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x, y + h - 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        // left and right edge (same BL -> BR -> TR -> TL winding as every other quad)
+        vertexBuffer.vertex(x, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + 1, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + 1, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w - 1, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w - 1, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+    }
+
     public void drawPopup(DrawContext drawContext, int mouseX, int mouseY) {
         Tessellator tessellator = Tessellator.getInstance();
         BufferBuilder vertexBuffer = tessellator.getBuffer();
         OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
-        RenderSystem.setShader(GameRenderer::getPositionTexColorProgram);
-        RenderSystem.setShaderTexture(0, Screen.OPTIONS_BACKGROUND_TEXTURE);
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
         OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
-        float var6 = 32.0F;
-        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE_COLOR);
-        vertexBuffer.vertex(this.x, this.y + this.h, 0.0).texture(this.x / var6, this.y / var6).color(64, 64, 64, 255).next();
-        vertexBuffer.vertex(this.x + this.w, this.y + this.h, 0.0).texture((this.x + this.w) / var6, this.y / var6).color(64, 64, 64, 255).next();
-        vertexBuffer.vertex(this.x + this.w, this.y, 0.0).texture((this.x + this.w) / var6, (this.y + this.h) / var6).color(64, 64, 64, 255).next();
-        vertexBuffer.vertex(this.x, this.y, 0.0).texture(this.x / var6, (this.y + this.h) / var6).color(64, 64, 64, 255).next();
-        tessellator.draw();
         OpenGL.glEnable(OpenGL.GL11_GL_BLEND);
         OpenGL.glBlendFunc(OpenGL.GL11_GL_SRC_ALPHA, OpenGL.GL11_GL_ONE_MINUS_SRC_ALPHA);
-        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
         vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
-        vertexBuffer.vertex(this.x, this.y + 4, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + this.w, this.y + 4, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + this.w, this.y, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x, this.y, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x, this.y + this.h, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x + this.w, this.y + this.h, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x + this.w, this.y + this.h - 4, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x, this.y + this.h - 4, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x, this.y, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x, this.y + this.h, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x + 4, this.y + this.h, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + 4, this.y, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + this.w - 4, this.y, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + this.w - 4, this.y + this.h, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + this.w, this.y + this.h, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x + this.w, this.y, 0.0).color(0, 0, 0, 255).next();
-        tessellator.draw();
-        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
-        vertexBuffer.vertex(this.x + this.w - 4, this.y, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + this.w - 4, this.y + this.h, 0.0).color(0, 0, 0, 0).next();
-        vertexBuffer.vertex(this.x + this.w, this.y + this.h, 0.0).color(0, 0, 0, 255).next();
-        vertexBuffer.vertex(this.x + this.w, this.y, 0.0).color(0, 0, 0, 255).next();
+        vertexBuffer.vertex(this.x, this.y + this.h, 0.0).color(PANEL_GRAY, PANEL_GRAY, PANEL_GRAY, PANEL_ALPHA).next();
+        vertexBuffer.vertex(this.x + this.w, this.y + this.h, 0.0).color(PANEL_GRAY, PANEL_GRAY, PANEL_GRAY, PANEL_ALPHA).next();
+        vertexBuffer.vertex(this.x + this.w, this.y, 0.0).color(PANEL_GRAY, PANEL_GRAY, PANEL_GRAY, PANEL_ALPHA).next();
+        vertexBuffer.vertex(this.x, this.y, 0.0).color(PANEL_GRAY, PANEL_GRAY, PANEL_GRAY, PANEL_ALPHA).next();
+        // thin separation line between each option row, flush with the box edges;
+        // the last row has none, so the box ends where the last option ends
+        for (int t = 1; t < this.entries.length; ++t) {
+            int rowTop = this.rowTop(t);
+            int lineTop = rowTop - this.lineGap;
+            int lineBottom = lineTop + 1;
+            vertexBuffer.vertex(this.x, lineBottom, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+            vertexBuffer.vertex(this.x + this.w, lineBottom, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+            vertexBuffer.vertex(this.x + this.w, lineTop, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+            vertexBuffer.vertex(this.x, lineTop, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        }
+        // hovered option gets the background of its section washed instead of the text color changing
+        int hoveredRow = -1;
+        for (int t = 0; t < this.entries.length; ++t) {
+            if (this.entries[t].enabled
+                    && mouseX >= this.x && mouseX <= this.x + this.w
+                    && mouseY >= this.rowTop(t) && mouseY <= this.rowTop(t) + this.entryHeight) {
+                hoveredRow = t;
+                break;
+            }
+        }
+        if (hoveredRow != -1) {
+            int rowTop = this.rowTop(hoveredRow);
+            // 1px above the row as well, like every other section; the bottom
+            // section also picks up the pad pixel below its row up to the border
+            int washTop = Math.max(this.y + 1, rowTop - 1);
+            int washBottom = rowTop + this.entryHeight + (hoveredRow == this.entries.length - 1 ? 1 : 0);
+            vertexBuffer.vertex(this.x, washBottom, 0.0).color(255, 255, 255, HOVER_ALPHA).next();
+            vertexBuffer.vertex(this.x + this.w, washBottom, 0.0).color(255, 255, 255, HOVER_ALPHA).next();
+            vertexBuffer.vertex(this.x + this.w, washTop, 0.0).color(255, 255, 255, HOVER_ALPHA).next();
+            vertexBuffer.vertex(this.x, washTop, 0.0).color(255, 255, 255, HOVER_ALPHA).next();
+        }
+        // 1px surrounding border in the same color as the separators
+        addBorder(vertexBuffer, this.x, this.y, this.w, this.h);
+
         tessellator.draw();
         RenderSystem.setShader(GameRenderer::getPositionTexProgram);
         OpenGL.glDisable(OpenGL.GL11_GL_BLEND);
 
+        MatrixStack matrices = drawContext.getMatrices();
         for (int t = 0; t < this.entries.length; ++t) {
-            int color = !this.entries[t].enabled ? 10526880 : (mouseX >= this.x && mouseX <= this.x + this.w && mouseY >= this.y + t * 20 && mouseY <= this.y + (t + 1) * 20 ? 16777120 : 14737632);
-            drawContext.drawTextWithShadow(this.fontRendererObj, this.entries[t].name, (this.x + this.padding), (this.y + this.padding + t * 20), color);
+            int rowTop = this.rowTop(t);
+            int color = this.entries[t].enabled ? 16777215 : 10526880;
+            float drawX = (rowTop + this.textTopOffset) / TEXT_SCALE;
+            float scaledTextWidth = this.fontRendererObj.getWidth(this.entries[t].name) * TEXT_SCALE;
+            float drawTextX = (this.x + (this.w - scaledTextWidth) / 2.0F) / TEXT_SCALE;
+            matrices.push();
+            matrices.scale(TEXT_SCALE, TEXT_SCALE, 1.0F);
+            drawContext.drawTextWithShadow(this.fontRendererObj, this.entries[t].name, (int) drawTextX, (int) drawX, color);
+            matrices.pop();
         }
 
     }
