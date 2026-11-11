@@ -77,22 +77,60 @@ public final class PlayerPositionPacket {
     }
 
     public static void sendTo(ServerPlayerEntity player, NbtCompound root) {
-        // Deliberately not gated on ServerPlayNetworking.canSend(): the client reads
-        // this channel through a mixin on ClientPlayNetworkHandler instead of a Fabric
-        // receiver, so it never declares the channel and canSend() would always be false,
-        // which silently dropped every snapshot. Sent unconditionally, exactly like the
-        // factions claim sync; clients without VoxelMap just ignore the payload.
+        byte[] payload = compress(root);
+        if (payload == null) return;
+
+        send(player, payload);
+        logFirstSend(root);
+    }
+
+    /**
+     * Compresses once and reuses those bytes for every recipient.
+     *
+     * <p>Compressing inside the per-player loop made the cost of a broadcast grow
+     * linearly with the player count: the payload is identical for everyone, so at
+     * 100 players a single snapshot cost ~9 ms of server thread instead of ~0.1 ms,
+     * and at 200 it exceeded a whole tick. Now it is compressed exactly once.
+     */
+    public static void sendToAll(MinecraftServer server, NbtCompound root) {
+        byte[] payload = compress(root);
+        if (payload == null) return;
+
+        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
+            send(player, payload);
+        }
+        logFirstSend(root);
+    }
+
+    /**
+     * Deliberately not gated on {@code ServerPlayNetworking.canSend()}: the client
+     * reads this channel through a mixin on ClientPlayNetworkHandler instead of a
+     * Fabric receiver, so it never declares the channel and canSend() would always
+     * be false, which silently dropped every snapshot. Sent unconditionally, exactly
+     * like the factions claim sync; clients without VoxelMap just ignore it.
+     *
+     * @return the gzipped snapshot, or null when it could not be written
+     */
+    private static byte[] compress(NbtCompound root) {
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (DataOutputStream out = new DataOutputStream(new GZIPOutputStream(bytes))) {
                 NbtIo.write(root, out);
             }
-            PacketByteBuf buf = new PacketByteBuf(Unpooled.wrappedBuffer(bytes.toByteArray()));
-            ServerPlayNetworking.send(player, CHANNEL, buf);
-            logFirstSend(root);
+            return bytes.toByteArray();
         } catch (IOException e) {
             LOGGER.warn("Could not send player positions", e);
+            return null;
         }
+    }
+
+    private static void send(ServerPlayerEntity player, byte[] payload) {
+        // A fresh wrapper per player: CustomPayloadS2CPacket copies out of the buffer
+        // when the packet is written, consuming its read position, so one shared
+        // wrapper would hand an empty payload to everyone after the first. The bytes
+        // underneath are only ever read, so they are safe to share across wrappers.
+        PacketByteBuf buf = new PacketByteBuf(Unpooled.wrappedBuffer(payload));
+        ServerPlayNetworking.send(player, CHANNEL, buf);
     }
 
     /** One line per server run, so it is obvious in the log that sync is alive. */

@@ -54,7 +54,11 @@ public class WaypointContainer {
     }
 
     public void renderWaypoints(float partialTicks, MatrixStack matrixStack, boolean beacons, boolean signs, boolean withDepth, boolean withoutDepth) {
-        this.sortWaypoints();
+        // Only ordering what gets drawn: with both toggles off nothing renders, so
+        // there is no reason to sort the list every frame
+        if (this.options.showBeacons || this.options.showWaypoints) {
+            this.sortWaypoints();
+        }
         Entity cameraEntity = VoxelConstants.getMinecraft().getCameraEntity();
         double renderPosX = GameVariableAccessShim.xCoordDouble();
         double renderPosY = GameVariableAccessShim.yCoordDouble();

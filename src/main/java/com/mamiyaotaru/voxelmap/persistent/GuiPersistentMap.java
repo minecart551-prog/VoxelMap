@@ -121,8 +121,9 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     private static int playerGLID;
     private static boolean gotSkin;
     private static int skinTries;
-    // Head marker size: the original 40px, 20% smaller, then 10% smaller twice
-    private static final float PLAYER_HEAD_SIZE = 25.92F;
+    // Head marker size: the original 40px, 20% smaller, then 10% smaller twice,
+    // then set back up to 30px by request. The face covers 16/22 of this box.
+    private static final float PLAYER_HEAD_SIZE = 30.0F;
     // Face and hat region of a 64x64 skin, in normalized texture coordinates
     private static final float SKIN_FACE_U0 = 8.0F / 64.0F;
     private static final float SKIN_FACE_V0 = 8.0F / 64.0F;
@@ -836,19 +837,23 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             RenderSystem.applyModelViewMatrix();
         }
 
-        // Own head, 20% smaller than the original 40px marker
+        // Own head, drawn at the same size as everyone else's
         OpenGL.Utils.disp2(playerGLID);
         OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MIN_FILTER, OpenGL.GL11_GL_LINEAR);
         OpenGL.glTexParameteri(OpenGL.GL11_GL_TEXTURE_2D, OpenGL.GL11_GL_TEXTURE_MAG_FILTER, OpenGL.GL11_GL_LINEAR);
         this.drawTexturedModalRect(-(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + playerX * this.mapToGui, -(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + playerZ * this.mapToGui, PLAYER_HEAD_SIZE / this.scScale, PLAYER_HEAD_SIZE / this.scScale);
 
-        // Everyone else, same size, from the positions the server syncs
-        this.drawOtherPlayerHeads();
-
         if (this.oldNorth) {
             modelViewMatrixStack.pop();
             RenderSystem.applyModelViewMatrix();
         }
+
+        // Everyone else, same size, from the positions the server syncs. Drawn
+        // after the marker's counter-rotation is popped, so each head can undo
+        // the map's oldNorth turn about its own centre instead: turning about the
+        // local player would drag every other head off their true position.
+        this.drawOtherPlayerHeads(drawContext, cursorCoordX, cursorCoordZ);
+
         modelViewMatrixStack.push();
         modelViewMatrixStack.translate(playerX * this.mapToGui, playerZ * this.mapToGui, 0.0);
         modelViewMatrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(
@@ -1475,8 +1480,12 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
      * Heads of every other player the server reported for the dimension the map
      * is showing. Positions come from the synced snapshot rather than from
      * nearby entities, so players show up no matter how far away they are.
+     *
+     * <p>Hovering a head writes that player's name underneath it. The cursor is
+     * in map coordinates, so the icon's half width is converted to blocks for the
+     * test, which keeps the hover area glued to the icon at every zoom level.
      */
-    private void drawOtherPlayerHeads() {
+    private void drawOtherPlayerHeads(DrawContext drawContext, float cursorCoordX, float cursorCoordZ) {
         ClientWorld world = this.persistentMap.world;
         if (world == null) return;
 
@@ -1484,6 +1493,10 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         MinecraftClient client = VoxelConstants.getMinecraft();
         ClientPlayNetworkHandler networkHandler = client.getNetworkHandler();
         UUID ownUUID = client.player != null ? client.player.getUuid() : null;
+        MatrixStack modelViewMatrixStack = RenderSystem.getModelViewStack();
+        // Half the icon plus a couple of pixels of grace, converted to blocks
+        float hoverRadius = (PLAYER_HEAD_SIZE / 2.0F + 2.0F) / this.scScale * this.guiToMap;
+        float halfHead = -(PLAYER_HEAD_SIZE / 2.0F) / this.scScale;
 
         for (PlayerPositionStore.PlayerEntry entry : PlayerPositionStore.getEntries()) {
             // /pv hide players are drawn nowhere
@@ -1503,9 +1516,64 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
 
             float headX = (float) entry.x * this.mapToGui;
             float headZ = (float) entry.z * this.mapToGui;
-            this.drawHeadIcon(skin, -(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + headX,
-                    -(PLAYER_HEAD_SIZE / 2.0F) / this.scScale + headZ);
+
+            // Counter-rotate about this head's own centre. The local player's
+            // marker already has the map's oldNorth turn cancelled about itself;
+            // sharing that frame would leave every other head rotated and shifted
+            // by the distance between them and the local player.
+            modelViewMatrixStack.push();
+            modelViewMatrixStack.translate(headX, headZ, 0.0);
+            if (this.oldNorth) {
+                modelViewMatrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-90.0F));
+            }
+
+            RenderSystem.applyModelViewMatrix();
+            this.drawHeadIcon(skin, halfHead, halfHead);
+            modelViewMatrixStack.pop();
+            RenderSystem.applyModelViewMatrix();
+
+            if (Math.abs(cursorCoordX - entry.x) <= hoverRadius
+                    && Math.abs(cursorCoordZ - entry.z) <= hoverRadius) {
+                this.drawPlayerName(drawContext, entry.name, headX, headZ);
+            }
         }
+
+        // Names go through DrawContext, which re-enables depth when it flushes
+        OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
+    }
+
+    /**
+     * A player's name under their head, drawn the way waypoint names are: scaled
+     * against the GUI, counter-rotated for oldNorth, and pushed through the
+     * DrawContext so it lands in screen space rather than map space.
+     */
+    private void drawPlayerName(DrawContext drawContext, String name, float headX, float headZ) {
+        float fontScale = 2.0F / this.scScale;
+        int centered = this.chkLen(name) / 2;
+        // Half the icon plus a small gap, in the same raw pixels the size is in
+        float nameOffset = PLAYER_HEAD_SIZE / 2.0F + 2.0F;
+        MatrixStack matrixStack = drawContext.getMatrices();
+
+        matrixStack.push();
+        matrixStack.scale(fontScale, fontScale, 1.0F);
+        if (this.oldNorth) {
+            matrixStack.translate(headX / fontScale, headZ / fontScale, 0.0);
+            matrixStack.multiply(RotationAxis.POSITIVE_Z.rotationDegrees(-90.0F));
+            matrixStack.translate(-headX / fontScale, -headZ / fontScale, 0.0);
+            RenderSystem.applyModelViewMatrix();
+        }
+
+        // The head icon just set the textured shader; text flushes with whatever
+        // is current, so put the untextured one back first
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+        this.write(drawContext, name, headX / fontScale - centered,
+                headZ / fontScale + nameOffset / this.scScale / fontScale, 16777215);
+        matrixStack.pop();
+        RenderSystem.applyModelViewMatrix();
+        OpenGL.glEnable(OpenGL.GL11_GL_BLEND);
+        // DrawContext.draw() enables depth as it flushes; the map's marker layer
+        // draws with it off, so put it back for whatever is drawn next
+        OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
     }
 
     /**
@@ -1588,6 +1656,28 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         tessellator.draw();
     }
 
+    /**
+     * Whether the local player may run operator commands.
+     *
+     * <p>{@code hasPermissionLevel} is useless here: the client's permission
+     * level is only ever written by an integrated server, so on a dedicated
+     * server it stays 0 forever and even operators read as non-operators. The
+     * server does the work for us instead — it strips every command the player
+     * may not run out of the tree it sends, which leaves the synced dispatcher
+     * holding only what this player is allowed to use. {@code gamemode},
+     * {@code tp} and {@code kill} are all level 2 commands, so any of them being
+     * present means the player is at least level 2.
+     */
+    private static boolean isOperator() {
+        ClientPlayNetworkHandler networkHandler = VoxelConstants.getMinecraft().getNetworkHandler();
+        if (networkHandler == null) {
+            return false;
+        }
+        return networkHandler.getCommandDispatcher().getRoot().getChild("gamemode") != null
+                || networkHandler.getCommandDispatcher().getRoot().getChild("tp") != null
+                || networkHandler.getCommandDispatcher().getRoot().getChild("kill") != null;
+    }
+
     private void createPopup(int x, int y, int directX, int directY) {
         ArrayList<Popup.PopupEntry> entries = new ArrayList<>();
         float cursorX = directX;
@@ -1619,8 +1709,12 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             entry = new Popup.PopupEntry(I18n.translate(hovered == null ? "minimap.waypoints.highlight" : "minimap.waypoints.removehighlight"), 1, true, true);
         }
         entries.add(entry);
-        entry = new Popup.PopupEntry(I18n.translate("minimap.waypoints.teleportto"), 3, true, true);
-        entries.add(entry);
+        // Teleporting is an operator privilege, so the entry is only built for
+        // operators; everyone else simply gets a shorter popup.
+        if (isOperator()) {
+            entry = new Popup.PopupEntry(I18n.translate("minimap.waypoints.teleportto"), 3, true, true);
+            entries.add(entry);
+        }
         entry = new Popup.PopupEntry(I18n.translate("minimap.waypoints.share"), 2, true, true);
         entries.add(entry);
 

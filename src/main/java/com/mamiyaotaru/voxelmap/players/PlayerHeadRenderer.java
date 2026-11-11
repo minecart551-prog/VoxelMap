@@ -11,17 +11,20 @@ import com.mamiyaotaru.voxelmap.util.OpenGL;
 import com.mojang.blaze3d.systems.RenderSystem;
 
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.render.BufferBuilder;
 import net.minecraft.client.render.GameRenderer;
 import net.minecraft.client.render.Tessellator;
+import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.render.VertexFormat;
 import net.minecraft.client.render.VertexFormats;
 import net.minecraft.client.util.DefaultSkinHelper;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.RotationAxis;
 import net.minecraft.util.math.Vec3d;
@@ -62,6 +65,21 @@ public final class PlayerHeadRenderer {
      */
     private static final float SEE_THROUGH_ALPHA = 1.0F;
 
+    /**
+     * How close the camera has to be pointed at a player before their name shows.
+     * The icon is a constant size on screen at any range, so a constant angle is a
+     * constant patch of screen. Five degrees matches the waypoint label.
+     */
+    private static final double LOOK_ANGLE_DEGREES = 5.0;
+    private static final double LOOK_AT_COSINE = Math.cos(Math.toRadians(LOOK_ANGLE_DEGREES));
+
+    /** Label line height in font pixels, used to size the text against the head. */
+    private static final float TEXT_HEIGHT = 9.0F;
+    /** Blank space between the head and the name, in font pixels. */
+    private static final float LABEL_GAP = 2.0F;
+    /** Text height as a fraction of the head's on-screen height. */
+    private static final float LABEL_HEIGHT_RATIO = 0.8F;
+
     private PlayerHeadRenderer() {}
 
     public static void renderPlayerHeads(float partialTicks, MatrixStack matrixStack, boolean withDepth, boolean withoutDepth) {
@@ -75,6 +93,15 @@ public final class PlayerHeadRenderer {
         double renderPosX = GameVariableAccessShim.xCoordDouble();
         double renderPosY = GameVariableAccessShim.yCoordDouble();
         double renderPosZ = GameVariableAccessShim.zCoordDouble();
+
+        // Heads behind the camera can never be seen, so they are dropped before any
+        // matrix work. In open terrain that is roughly half of them, and it is the
+        // only culling allowed here: heads have to stay visible at any distance.
+        double yaw = Math.toRadians(client.getEntityRenderDispatcher().camera.getYaw());
+        double pitch = Math.toRadians(client.getEntityRenderDispatcher().camera.getPitch());
+        double forwardX = -Math.sin(yaw) * Math.cos(pitch);
+        double forwardY = -Math.sin(pitch);
+        double forwardZ = Math.cos(yaw) * Math.cos(pitch);
 
         OpenGL.glEnable(OpenGL.GL11_GL_CULL_FACE);
         OpenGL.glEnable(OpenGL.GL11_GL_BLEND);
@@ -92,8 +119,19 @@ public final class PlayerHeadRenderer {
             if (entry.uuid.equals(client.player.getUuid())) continue;
 
             Vec3d position = livePosition(client.world, entry, partialTicks);
-            renderHead(matrixStack, client, entry.uuid, position.x - renderPosX,
-                    position.y + HEAD_HEIGHT - renderPosY, position.z - renderPosZ, withDepth, withoutDepth);
+            double x = position.x - renderPosX;
+            double y = position.y + HEAD_HEIGHT - renderPosY;
+            double z = position.z - renderPosZ;
+            double toward = x * forwardX + y * forwardY + z * forwardZ;
+            // Behind the camera plane: dot product with the view direction, and a
+            // head there would project inside out as well as being invisible
+            if (toward <= 0.0) continue;
+
+            double distance = Math.sqrt(x * x + y * y + z * z);
+            // Named only when the camera is actually pointed at them
+            String name = distance > 1.0E-4 && toward / distance >= LOOK_AT_COSINE ? entry.name : null;
+
+            renderHead(matrixStack, client, entry.uuid, name, x, y, z, distance, withDepth, withoutDepth);
         }
 
         OpenGL.glDepthMask(true);
@@ -115,8 +153,8 @@ public final class PlayerHeadRenderer {
         return new Vec3d(entry.x, entry.y, entry.z);
     }
 
-    private static void renderHead(MatrixStack matrixStack, MinecraftClient client, UUID uuid,
-            double x, double y, double z, boolean withDepth, boolean withoutDepth) {
+    private static void renderHead(MatrixStack matrixStack, MinecraftClient client, UUID uuid, String name,
+            double x, double y, double z, double distance, boolean withDepth, boolean withoutDepth) {
         Identifier skin = skinFor(client, uuid);
         if (skin == null) return;
 
@@ -126,11 +164,18 @@ public final class PlayerHeadRenderer {
                 -client.getEntityRenderDispatcher().camera.getYaw()));
         matrixStack.multiply(RotationAxis.POSITIVE_X.rotationDegrees(
                 client.getEntityRenderDispatcher().camera.getPitch()));
+
+        // Named only in the through-walls pass: that pass always runs, and drawing
+        // it there keeps the name readable no matter what is in front of the player
+        if (name != null && withoutDepth) {
+            renderLabel(matrixStack, client, name, distance);
+        }
+
+        matrixStack.push();
         // Constant size on screen: perspective divides projected size by distance, so
         // growing the icon by that same distance cancels it out. Floored at one block so
         // a head right on top of the camera does not collapse to nothing.
-        double distance = Math.max(Math.sqrt(x * x + y * y + z * z), 1.0);
-        float scale = (float) (HEAD_SIZE * distance / SIZE_REFERENCE_DISTANCE);
+        float scale = (float) (HEAD_SIZE * Math.max(distance, 1.0) / SIZE_REFERENCE_DISTANCE);
         matrixStack.scale(-scale, -scale, -scale);
         Matrix4f matrix4f = matrixStack.peek().getPositionMatrix();
 
@@ -153,26 +198,80 @@ public final class PlayerHeadRenderer {
         }
 
         matrixStack.pop();
+        matrixStack.pop();
     }
 
     /**
-     * Face first, then the hat layer over it. The hat is a transparent overlay,
-     * so it only needs to be drawn on top of the face.
+     * The player's name, floating just above their head while the camera is
+     * pointed at them.
+     *
+     * <p>Same shape as the waypoint label: a backdrop quad for readability and
+     * the text itself in the through-walls layer. The head and the label are both
+     * scaled with distance, so locking the text to a fraction of the head's height
+     * keeps the two in proportion on screen at every range.
      */
-    private static void drawHeadLayers(BufferBuilder vertexBuffer, Tessellator tessellator, Matrix4f matrix4f, float alpha) {
-        drawQuad(vertexBuffer, tessellator, matrix4f, FACE_U0, FACE_V0, FACE_U1, FACE_V1, alpha);
-        drawQuad(vertexBuffer, tessellator, matrix4f, HAT_U0, FACE_V0, HAT_U1, FACE_V1, alpha);
+    private static void renderLabel(MatrixStack matrixStack, MinecraftClient client, String name, double distance) {
+        TextRenderer textRenderer = client.textRenderer;
+        if (textRenderer == null || name.isEmpty()) return;
+
+        float headScale = (float) (HEAD_SIZE * Math.max(distance, 1.0) / SIZE_REFERENCE_DISTANCE);
+        float labelScale = headScale * LABEL_HEIGHT_RATIO / TEXT_HEIGHT;
+        // The head's top edge in label units; both scales grow with distance, so
+        // this ratio is the same up close as it is a thousand blocks away
+        float headTop = -0.5F * headScale / labelScale;
+        float textTop = headTop - LABEL_GAP - TEXT_HEIGHT;
+
+        matrixStack.push();
+        matrixStack.scale(-labelScale, -labelScale, -labelScale);
+        Matrix4f matrix4f = matrixStack.peek().getPositionMatrix();
+
+        int halfWidth = textRenderer.getWidth(name) / 2;
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+
+        // Backdrop, so the name stays legible against bright sky or snow
+        OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
+        OpenGL.glDepthMask(false);
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        vertexBuffer.vertex(matrix4f, -halfWidth - 2, textTop + TEXT_HEIGHT, 0.0F).color(0.0F, 0.0F, 0.0F, 0.5F).next();
+        vertexBuffer.vertex(matrix4f, halfWidth + 2, textTop + TEXT_HEIGHT, 0.0F).color(0.0F, 0.0F, 0.0F, 0.5F).next();
+        vertexBuffer.vertex(matrix4f, halfWidth + 2, textTop - 2, 0.0F).color(0.0F, 0.0F, 0.0F, 0.5F).next();
+        vertexBuffer.vertex(matrix4f, -halfWidth - 2, textTop - 2, 0.0F).color(0.0F, 0.0F, 0.0F, 0.5F).next();
+        tessellator.draw();
+
+        VertexConsumerProvider.Immediate vertexConsumerProvider = client.getBufferBuilders().getEntityVertexConsumers();
+        textRenderer.draw(Text.literal(name), -halfWidth, textTop, 0xFFFFFF, false, matrix4f,
+                vertexConsumerProvider, TextRenderer.TextLayerType.SEE_THROUGH, 0, 15728880);
+        vertexConsumerProvider.draw();
+
+        OpenGL.glEnable(OpenGL.GL11_GL_BLEND);
+        OpenGL.glDepthMask(false);
+        matrixStack.pop();
     }
 
-    private static void drawQuad(BufferBuilder vertexBuffer, Tessellator tessellator, Matrix4f matrix4f,
+    /**
+     * Face first, then the hat layer over it, both written into one buffer and
+     * drawn with a single call. The hat is a transparent overlay so it has to be
+     * submitted after the face, but nothing about that requires a separate draw:
+     * sharing one {@code begin}/{@code draw} halves the draw calls per head, which
+     * is the main per-frame cost of this renderer.
+     */
+    private static void drawHeadLayers(BufferBuilder vertexBuffer, Tessellator tessellator, Matrix4f matrix4f, float alpha) {
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE_COLOR);
+        drawQuad(vertexBuffer, matrix4f, FACE_U0, FACE_V0, FACE_U1, FACE_V1, alpha);
+        drawQuad(vertexBuffer, matrix4f, HAT_U0, FACE_V0, HAT_U1, FACE_V1, alpha);
+        tessellator.draw();
+    }
+
+    /** Appends one quad to the buffer that is already being built. */
+    private static void drawQuad(BufferBuilder vertexBuffer, Matrix4f matrix4f,
             float u0, float v0, float u1, float v1, float alpha) {
         float half = 0.5F;
-        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_TEXTURE_COLOR);
         vertexBuffer.vertex(matrix4f, -half, -half, 0.0F).texture(u0, v0).color(1.0F, 1.0F, 1.0F, alpha).next();
         vertexBuffer.vertex(matrix4f, -half, half, 0.0F).texture(u0, v1).color(1.0F, 1.0F, 1.0F, alpha).next();
         vertexBuffer.vertex(matrix4f, half, half, 0.0F).texture(u1, v1).color(1.0F, 1.0F, 1.0F, alpha).next();
         vertexBuffer.vertex(matrix4f, half, -half, 0.0F).texture(u1, v0).color(1.0F, 1.0F, 1.0F, alpha).next();
-        tessellator.draw();
     }
 
     /**

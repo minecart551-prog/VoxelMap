@@ -61,9 +61,7 @@ public final class PlayerPositionSyncHandler {
     }
 
     private static void sendToAll(MinecraftServer server, NbtCompound root) {
-        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-            PlayerPositionPacket.sendTo(player, root);
-        }
+        PlayerPositionPacket.sendToAll(server, root);
     }
 
     /**
