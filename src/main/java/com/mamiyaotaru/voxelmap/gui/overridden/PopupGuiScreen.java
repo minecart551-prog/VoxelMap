@@ -10,7 +10,11 @@ public abstract class PopupGuiScreen extends GuiScreenMinimap implements IPopupG
     @Override
     public void removed() {}
 
-    public void createPopup(int x, int y, int directX, int directY, ArrayList<Popup.PopupEntry> entries) { popups.add(new Popup(x, y, directX, directY, entries, this)); }
+    public void createPopup(int x, int y, int directX, int directY, ArrayList<Popup.PopupEntry> entries) {
+        // only one popup at a time
+        this.clearPopups();
+        popups.add(new Popup(x, y, directX, directY, entries, this));
+    }
 
     public void clearPopups() { popups.clear(); }
 
@@ -62,5 +66,26 @@ public abstract class PopupGuiScreen extends GuiScreenMinimap implements IPopupG
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         return !this.clickedPopup(mouseX, mouseY) && super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        // fire on release: entries whose causesClose is false (access level toggle)
+        boolean overPopup = false;
+        for (Popup popup : new ArrayList<>(this.popups)) {
+            overPopup |= popup.releasedMe(mouseX, mouseY);
+        }
+        if (overPopup) {
+            // remove closed popups
+            ArrayList<Popup> deadPopups = new ArrayList<>();
+            for (Popup popup : this.popups) {
+                if (popup.shouldClose()) {
+                    deadPopups.add(popup);
+                }
+            }
+            this.popups.removeAll(deadPopups);
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 }

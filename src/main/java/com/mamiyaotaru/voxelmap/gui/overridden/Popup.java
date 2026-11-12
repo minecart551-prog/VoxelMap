@@ -35,13 +35,13 @@ public class Popup {
     public final int clickedDirectY;
     boolean shouldClose;
     final PopupGuiScreen parentGui;
-    final int padding = 2;
+    private static final int PADDING = 2;
     final int entryHeight = 13;
     final int lineGap = 2;
     final int textTopOffset = 3;
 
     private int rowTop(int t) {
-        return this.y + this.padding + t * (this.entryHeight + this.lineGap);
+        return this.y + PADDING + t * (this.entryHeight + this.lineGap);
     }
 
     public Popup(int x, int y, int directX, int directY, ArrayList<PopupEntry> entries, PopupGuiScreen parentGui) {
@@ -56,7 +56,7 @@ public class Popup {
         this.entries = new PopupEntry[entries.size()];
         entries.toArray(this.entries);
         // bottom padding is 1: the box ends one pixel higher than it used to
-        this.h = this.padding + 1 + this.entries.length * this.entryHeight + Math.max(0, this.entries.length - 1) * this.lineGap;
+        this.h = PADDING + 1 + this.entries.length * this.entryHeight + Math.max(0, this.entries.length - 1) * this.lineGap;
 
         for (PopupEntry entry : this.entries) {
             int entryWidth = (int) Math.ceil(this.fontRendererObj.getWidth(entry.name) * TEXT_SCALE);
@@ -65,7 +65,7 @@ public class Popup {
             }
         }
 
-        this.w += this.padding * 2 + EXTRA_WIDTH;
+        this.w += PADDING * 2 + EXTRA_WIDTH;
         if (x + this.w > parentGui.width) {
             this.x = x - this.w + 2;
         }
@@ -77,13 +77,24 @@ public class Popup {
     }
 
     public boolean clickedMe(double mouseX, double mouseY) {
+        return clickedMe(mouseX, mouseY, true);
+    }
+
+    public boolean releasedMe(double mouseX, double mouseY) {
+        return clickedMe(mouseX, mouseY, false);
+    }
+
+    /** Fires entries: press for causesClose=true rows, release for causesClose=false rows. */
+    private boolean clickedMe(double mouseX, double mouseY, boolean firingOnPress) {
         boolean clicked = mouseX > this.x && mouseX < (this.x + this.w) && mouseY > this.y && mouseY < (this.y + this.h);
         if (clicked) {
             for (int t = 0; t < this.entries.length; ++t) {
                 if (this.entries[t].enabled) {
                     int rowTop = this.rowTop(t);
                     boolean entryClicked = mouseX >= this.x && mouseX <= (this.x + this.w) && mouseY >= rowTop && mouseY <= (rowTop + this.entryHeight);
-                    if (entryClicked) {
+                    // entries that close the popup fire on press; toggles that keep it
+                    // open cycle on release instead, so one physical click fires once
+                    if (entryClicked && (firingOnPress == this.entries[t].causesClose)) {
                         this.shouldClose = this.entries[t].causesClose;
                         this.parentGui.popupAction(this, this.entries[t].action);
                     }
@@ -92,6 +103,16 @@ public class Popup {
         }
 
         return clicked;
+    }
+
+    /** Replaces the label of the entry with the given action, e.g. to cycle option text. */
+    public void setEntryName(int action, String newName) {
+        for (PopupEntry entry : this.entries) {
+            if (entry.action == action) {
+                entry.name = newName;
+            }
+        }
+
     }
 
     public boolean overMe(int x, int y) {
@@ -104,14 +125,14 @@ public class Popup {
 
     private static void addBorder(BufferBuilder vertexBuffer, int x, int y, int w, int h) {
         // top and bottom edge
-        vertexBuffer.vertex(x, y + 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-        vertexBuffer.vertex(x + w, y + 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-        vertexBuffer.vertex(x + w, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-        vertexBuffer.vertex(x, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-        vertexBuffer.vertex(x, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-        vertexBuffer.vertex(x + w, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-        vertexBuffer.vertex(x + w, y + h - 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-        vertexBuffer.vertex(x, y + h - 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + 1, y + 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w - 1, y + 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w - 1, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + 1, y, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + 1, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w - 1, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + w - 1, y + h - 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+        vertexBuffer.vertex(x + 1, y + h - 1, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
         // left and right edge (same BL -> BR -> TR -> TL winding as every other quad)
         vertexBuffer.vertex(x, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
         vertexBuffer.vertex(x + 1, y + h, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
@@ -142,10 +163,14 @@ public class Popup {
             int rowTop = this.rowTop(t);
             int lineTop = rowTop - this.lineGap;
             int lineBottom = lineTop + 1;
-            vertexBuffer.vertex(this.x, lineBottom, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-            vertexBuffer.vertex(this.x + this.w, lineBottom, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-            vertexBuffer.vertex(this.x + this.w, lineTop, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
-            vertexBuffer.vertex(this.x, lineTop, 0.0).color(LINE_GRAY, LINE_GRAY, LINE_GRAY, 255).next();
+            int divider = this.entries[t].dividerColor;
+            int r = (divider == 0 ? LINE_GRAY : divider >> 16 & 255);
+            int g = (divider == 0 ? LINE_GRAY : divider >> 8 & 255);
+            int b = (divider == 0 ? LINE_GRAY : divider & 255);
+            vertexBuffer.vertex(this.x, lineBottom, 0.0).color(r, g, b, 255).next();
+            vertexBuffer.vertex(this.x + this.w, lineBottom, 0.0).color(r, g, b, 255).next();
+            vertexBuffer.vertex(this.x + this.w, lineTop, 0.0).color(r, g, b, 255).next();
+            vertexBuffer.vertex(this.x, lineTop, 0.0).color(r, g, b, 255).next();
         }
         // hovered option gets the background of its section washed instead of the text color changing
         int hoveredRow = -1;
@@ -191,16 +216,23 @@ public class Popup {
     }
 
     public static class PopupEntry {
-        public final String name;
+        public String name;
         public final int action;
         final boolean causesClose;
         final boolean enabled;
+        /** Divider line drawn above this entry; 0 uses the default white/gray divider. */
+        public final int dividerColor;
 
         public PopupEntry(String name, int action, boolean causesClose, boolean enabled) {
+            this(name, action, causesClose, enabled, 0);
+        }
+
+        public PopupEntry(String name, int action, boolean causesClose, boolean enabled, int dividerColor) {
             this.name = name;
             this.action = action;
             this.causesClose = causesClose;
             this.enabled = enabled;
+            this.dividerColor = dividerColor;
         }
     }
 }

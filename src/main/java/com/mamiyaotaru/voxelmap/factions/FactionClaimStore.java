@@ -32,6 +32,13 @@ public final class FactionClaimStore {
     public static final String CHANNEL = "voxelmap:faction_claims";
 
     private static volatile Snapshot snapshot = Snapshot.EMPTY;
+    /** The local player's faction id (uuid string), empty string when factionless or old packet. */
+    private static volatile String localFactionId = "";
+
+    /** @return the local player's faction id, empty string when factionless. */
+    public static String localFactionId() {
+        return localFactionId;
+    }
 
     private FactionClaimStore() {}
 
@@ -39,6 +46,8 @@ public final class FactionClaimStore {
      * One faction's data relevant to map rendering.
      */
     public static final class FactionArea {
+        /** Faction id (uuid string), empty when the server sync doesn't send it. */
+        public final String id;
         /** Faction name, never null. */
         public final String name;
         /** Faction description as set by the faction, empty when unset. May contain § formatting codes. */
@@ -55,10 +64,13 @@ public final class FactionClaimStore {
         public final double homeZ;
         private final Map<String, Set<Long>> claimsByDimension;
         private final Map<String, List<ClaimRun>> runsByDimension;
+        private final Map<String, Map<Long, Integer>> accessByDimension;
 
         private FactionArea(String name, String description, int power, int memberCount,
                 int color, String homeDimension, double homeX, double homeZ,
-                Map<String, Set<Long>> claimsByDimension) {
+                Map<String, Set<Long>> claimsByDimension,
+                Map<String, Map<Long, Integer>> accessByDimension,
+                String id) {
             this.name = name;
             this.description = description;
             this.power = power;
@@ -68,7 +80,18 @@ public final class FactionClaimStore {
             this.homeX = homeX;
             this.homeZ = homeZ;
             this.claimsByDimension = claimsByDimension;
+            this.accessByDimension = accessByDimension;
+            this.id = id;
             this.runsByDimension = buildRuns(claimsByDimension);
+        }
+
+        /**
+         * @return the chunk's access level ordinal (0 owner, 1 leader, 2 commander, 3 member)
+         *         or -1 when unknown.
+         */
+        public int accessLevelAt(String dimension, long chunkKey) {
+            Map<Long, Integer> levels = accessByDimension.get(dimension);
+            return levels != null ? levels.getOrDefault(chunkKey, -1) : -1;
         }
 
         /**
@@ -141,6 +164,19 @@ public final class FactionClaimStore {
     }
 
     /**
+     * @return the faction area that owns the chunk, or null when it is not claimed by any synced faction
+     */
+    public static FactionArea ownerOf(String dimension, long chunkKey) {
+        for (FactionArea area : getAreas(dimension)) {
+            if (area.claimsIn(dimension).contains(chunkKey)) {
+                return area;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Reads a gzipped NBT payload sent by the Factions mod and publishes it as
      * the current snapshot.
      */
@@ -168,15 +204,18 @@ public final class FactionClaimStore {
      */
     public static void clear() {
         snapshot = Snapshot.EMPTY;
+        localFactionId = "";
     }
 
     private static Snapshot parse(NbtCompound root) {
+        localFactionId = root.contains("localFaction") ? root.getString("localFaction") : "";
         Map<String, List<FactionArea>> byDimension = new HashMap<>();
 
         NbtList factionList = root.getList("factions", 10);
         for (int i = 0; i < factionList.size(); i++) {
             NbtCompound factionTag = factionList.getCompound(i);
 
+            String id = factionTag.contains("id") ? factionTag.getString("id") : "";
             String name = factionTag.getString("name");
             String description = factionTag.contains("description")
                     ? factionTag.getString("description") : "";
@@ -191,6 +230,7 @@ public final class FactionClaimStore {
             double homeZ = factionTag.getDouble("homeZ");
 
             Map<String, Set<Long>> claims = new HashMap<>();
+            Map<String, Map<Long, Integer>> access = new HashMap<>();
             NbtList levelList = factionTag.getList("claims", 10);
             for (int j = 0; j < levelList.size(); j++) {
                 NbtCompound levelTag = levelList.getCompound(j);
@@ -199,12 +239,18 @@ public final class FactionClaimStore {
 
                 int[] xs = levelTag.getIntArray("chunkX");
                 int[] zs = levelTag.getIntArray("chunkZ");
+                int[] accessLevels = levelTag.contains("accessLevel") ? levelTag.getIntArray("accessLevel") : new int[0];
                 Set<Long> chunks = new HashSet<>(Math.max(16, xs.length * 2));
+                Map<Long, Integer> chunkAccess = new HashMap<>(Math.max(16, xs.length * 2));
                 for (int k = 0; k < xs.length && k < zs.length; k++) {
-                    chunks.add(chunkKey(xs[k], zs[k]));
+                    long key = chunkKey(xs[k], zs[k]);
+                    chunks.add(key);
+                    int levelOrdinal = (accessLevels != null && k < accessLevels.length) ? accessLevels[k] : 3;
+                    chunkAccess.put(key, levelOrdinal);
                 }
                 if (!chunks.isEmpty()) {
                     claims.put(level, chunks);
+                    access.put(level, chunkAccess);
                 }
             }
 
@@ -212,7 +258,7 @@ public final class FactionClaimStore {
 
             FactionArea area = new FactionArea(name != null ? name : "???",
                     description != null ? description : "", power, memberCount, color,
-                    homeDimension, homeX, homeZ, claims);
+                    homeDimension, homeX, homeZ, claims, access, id);
             for (String dimension : claims.keySet()) {
                 byDimension.computeIfAbsent(dimension, key -> new ArrayList<>()).add(area);
             }

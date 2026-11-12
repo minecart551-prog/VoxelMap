@@ -17,6 +17,7 @@ import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.network.packet.s2c.play.CustomPayloadS2CPacket;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -27,6 +28,12 @@ public class FabricModVoxelMap implements ClientModInitializer {
 
     public void onInitializeClient() {
         instance = this;
+        // Claim actions are sent to the Factions mod; it answers on
+        // voxelmap:faction_action_result. The receiving side registers a no-op
+        // receiver so Fabric allows the send.
+        net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.registerGlobalReceiver(
+                new Identifier("voxelmap", "faction_action"), (client, handler, buf, responseSender) -> {
+        });
         // Data synced by the Factions mod must not leak into the next server
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
             FactionClaimStore.clear();
@@ -161,6 +168,17 @@ public class FabricModVoxelMap implements ClientModInitializer {
                                 VoxelConstants.getVoxelMapInstance().getMapOptions().serverTeleportCommand = (String) value;
                         default -> VoxelConstants.getLogger().warn("Unknown configuration option " + setting);
                     }
+                }
+                return true;
+            } else if (channelName.equals("voxelmap:faction_action_result")) {
+                // Factions mod answered a claim request; failures get a tutorial toast
+                boolean ok = buffer.readBoolean();
+                String message = buffer.readString();
+                if (message != null && !message.isEmpty()) {
+                    // hint: one at a time, top-right of the fullscreen map, auto-dismisses
+                    String plain = message.replaceAll("§.", "");
+                    net.minecraft.client.MinecraftClient client = VoxelConstants.getMinecraft();
+                    client.execute(() -> com.mamiyaotaru.voxelmap.factions.FactionHint.show(plain));
                 }
                 return true;
             } else if (channelName.equals(FactionClaimStore.CHANNEL)) {

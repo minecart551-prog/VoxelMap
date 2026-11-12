@@ -5,6 +5,7 @@ import com.mamiyaotaru.voxelmap.VoxelConstants;
 import com.mamiyaotaru.voxelmap.WaypointManager;
 import com.mamiyaotaru.voxelmap.factions.FactionClaimStore;
 import com.mamiyaotaru.voxelmap.factions.FactionClaimStore.FactionArea;
+import com.mamiyaotaru.voxelmap.factions.FactionHint;
 import com.mamiyaotaru.voxelmap.fabricmod.FabricModVoxelMap;
 import com.mamiyaotaru.voxelmap.gui.GuiAddWaypoint;
 import com.mamiyaotaru.voxelmap.gui.GuiMinimapOptions;
@@ -46,6 +47,7 @@ import net.minecraft.client.render.VertexFormat;
 import net.minecraft.client.render.VertexFormats;
 import net.minecraft.client.render.entity.PlayerModelPart;
 import net.minecraft.client.resource.language.I18n;
+import net.minecraft.network.PacketByteBuf;
 import net.minecraft.client.texture.PlayerSkinTexture;
 import net.minecraft.client.util.DefaultSkinHelper;
 import net.minecraft.client.util.InputUtil;
@@ -158,6 +160,26 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     private String selectedFactionDimension = "";
     private double factionClickX;
     private double factionClickY;
+    /** Whether faction claiming actions are available (synced factions, areas on). */
+    private boolean factionClaimAvailable() {
+        return this.options.showFactionAreas && FactionClaimStore.isAvailable();
+    }
+
+    /** Claim-edit mode: right-click selects chunks, drag right-click box-selects. */
+    private boolean factionDragging;
+    private int factionDragStartChunkX;
+    private int factionDragStartChunkZ;
+    private int factionDragEndChunkX;
+    private int factionDragEndChunkZ;
+    private long[] factionSelection;
+    private int factionSelectionMinChunkX;
+    private int factionSelectionMaxChunkX;
+    private int factionSelectionMinChunkZ;
+    private int factionSelectionMaxChunkZ;
+    /** Access level cycling index for the claim popup: 0 OWNER, 1 LEADER, 2 COMMANDER, 3 MEMBER. */
+    private int claimAccessIndex = 3;
+    /** True when the current selection holds own-faction claims of differing access levels. */
+    private boolean claimAccessMixed = false;
     private double pressX;
     private double pressY;
     private boolean pressOnMap;
@@ -236,6 +258,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
     }
 
     public void init() {
+        this.clearChildren();
         this.passEvents = true;
         this.oldNorth = mapOptions.oldNorth;
         this.centerAt(this.options.mapX, this.options.mapZ);
@@ -257,6 +280,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                 this.buttonFactions.setMessage(this.factionsButtonName());
                 if (!this.options.showFactionAreas) {
                     this.selectedFaction = null;
+                    this.clearFactionSelection();
                 }
             }, this);
             this.addDrawableChild(this.buttonFactions);
@@ -418,6 +442,80 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
 
     }
 
+    /** Converts raw GUI mouse coordinates to a chunk position. */
+    private int[] factionChunk(double mouseX, double mouseY) {
+        float cursorCoordX;
+        float cursorCoordZ;
+        if (this.oldNorth) {
+            cursorCoordX = (float) ((mouseY - this.top) * this.guiToMap + (this.mapCenterZ - this.centerY * this.guiToMap));
+            cursorCoordZ = -(float) (mouseX * this.guiToMap + (this.mapCenterX - this.centerX * this.guiToMap));
+        } else {
+            cursorCoordX = (float) (mouseX * this.guiToMap + (this.mapCenterX - this.centerX * this.guiToMap));
+            cursorCoordZ = (float) ((mouseY - this.top) * this.guiToMap + (this.mapCenterZ - this.centerY * this.guiToMap));
+        }
+        return factionChunkFromMapCoords(cursorCoordX, cursorCoordZ);
+    }
+
+    private static int[] factionChunkFromMapCoords(double coordX, double coordZ) {
+        return new int[]{Math.floorDiv((int) Math.floor(coordX), 16),
+                Math.floorDiv((int) Math.floor(coordZ), 16)};
+    }
+
+    private void clearFactionSelection() {
+        this.factionDragging = false;
+        this.factionSelection = null;
+    }
+
+    private void cycleFactionAccessLevel() {
+        if (this.claimAccessMixed) {
+            this.claimAccessMixed = false;
+            this.claimAccessIndex = 0;
+            return;
+        }
+        this.claimAccessIndex = (this.claimAccessIndex + 1) % 4;
+    }
+
+    private String claimAccessLabel() {
+        if (this.claimAccessMixed) {
+            return "Claim's Access Level: Mixed";
+        }
+        return switch (this.claimAccessIndex) {
+            case 0 -> "Claim's Access Level: Owner";
+            case 1 -> "Claim's Access Level: Leader";
+            case 2 -> "Claim's Access Level: Commander";
+            default -> "Claim's Access Level: Member";
+        };
+    }
+
+    private String claimAccessLevelName() {
+        return switch (this.claimAccessIndex) {
+            case 0 -> "owner";
+            case 1 -> "leader";
+            case 2 -> "commander";
+            default -> "member";
+        };
+    }
+
+    private void sendFactionAction(String action, long[] selection, String accessLevel) {
+        try {
+            PacketByteBuf buf = new PacketByteBuf(io.netty.buffer.Unpooled.buffer());
+            buf.writeString(action, 32);
+            buf.writeVarInt(selection.length);
+            for (long key : selection) {
+                buf.writeInt(FactionClaimStore.chunkX(key));
+                buf.writeInt(FactionClaimStore.chunkZ(key));
+            }
+            if (accessLevel != null && !accessLevel.isEmpty()) {
+                buf.writeString(accessLevel, 32);
+            }
+            VoxelConstants.getPlayer().networkHandler.sendPacket(
+                    new net.minecraft.network.packet.c2s.play.CustomPayloadC2SPacket(
+                            new net.minecraft.util.Identifier("voxelmap", "faction_action"), buf));
+        } catch (Exception e) {
+            VoxelConstants.getLogger().warn("Failed to send faction claim action", e);
+        }
+    }
+
     private float bindZoom(float zoom) {
         zoom = Math.max(this.options.minZoom, zoom);
         return Math.min(this.options.maxZoom, zoom);
@@ -465,6 +563,35 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             return this.addOverlay.mouseReleased(mouseX, mouseY, button);
         }
 
+        // Faction claim actions: end the chunk selection gesture
+        if (this.factionDragging && button == 1) {
+            this.factionDragging = false;
+            if (this.factionClaimAvailable() && mouseY > this.top && mouseY < this.bottom) {
+                int[] chunk = this.factionChunk(mouseX, mouseY);
+                this.factionDragEndChunkX = chunk[0];
+                this.factionDragEndChunkZ = chunk[1];
+                int minChunkX = Math.min(this.factionDragStartChunkX, this.factionDragEndChunkX);
+                int maxChunkX = Math.max(this.factionDragStartChunkX, this.factionDragEndChunkX);
+                int minChunkZ = Math.min(this.factionDragStartChunkZ, this.factionDragEndChunkZ);
+                int maxChunkZ = Math.max(this.factionDragStartChunkZ, this.factionDragEndChunkZ);
+                long[] selection = new long[(maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1)];
+                int i = 0;
+                for (int x = minChunkX; x <= maxChunkX; x++) {
+                    for (int z = minChunkZ; z <= maxChunkZ; z++) {
+                        selection[i++] = FactionClaimStore.chunkKey(x, z);
+                    }
+                }
+                this.factionSelection = selection;
+                this.factionSelectionMinChunkX = minChunkX;
+                this.factionSelectionMaxChunkX = maxChunkX;
+                this.factionSelectionMinChunkZ = minChunkZ;
+                this.factionSelectionMaxChunkZ = maxChunkZ;
+                this.selectedFaction = null;
+            } else {
+                this.clearFactionSelection();
+            }
+        }
+
         if (mouseY > this.top && mouseY < this.bottom && button == 1) {
             this.timeOfLastKBInput = 0L;
             int mouseDirectX = (int) VoxelConstants.getMinecraft().mouse.getX();
@@ -478,6 +605,8 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         // a view drag; clicks select the faction whose claim was hit, if any.
         if (button == 0 && this.pressOnMap) {
             this.pressOnMap = false;
+            // panning the map clears any pending claim selection
+            this.clearFactionSelection();
             boolean isClick = Math.abs(mouseX - this.pressX) <= 4.0 && Math.abs(mouseY - this.pressY) <= 4.0;
             if (isClick && mouseY > this.top && mouseY < this.bottom) {
                 this.selectFactionAt(mouseX, mouseY);
@@ -509,6 +638,18 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                     && mouseY >= fy && mouseY <= fy + this.searchField.getHeight())) {
                 this.searchField.setFocused(false);
             }
+        }
+
+        // Faction claim actions: right click selects a chunk, right drag box-selects
+        if (this.factionClaimAvailable() && button == 1 && mouseY > this.top && mouseY < this.bottom) {
+            int[] chunk = this.factionChunk(mouseX, mouseY);
+            this.factionDragging = true;
+            this.factionDragStartChunkX = chunk[0];
+            this.factionDragStartChunkZ = chunk[1];
+            this.factionDragEndChunkX = chunk[0];
+            this.factionDragEndChunkZ = chunk[1];
+            this.timeOfLastMouseInput = System.currentTimeMillis();
+            return true;
         }
 
         if (button == 0) {
@@ -576,6 +717,11 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
 
             this.searchField.keyPressed(keyCode, scanCode, modifiers);
             return true;
+        }
+
+        // Escape clears any pending claim selection (or drag)
+        if (keyCode == 256 && (this.factionSelection != null || this.factionDragging)) {
+            this.clearFactionSelection();
         }
 
         if (!this.editingCoordinates && (VoxelConstants.getMinecraft().options.jumpKey.matchesKey(keyCode, scanCode) || VoxelConstants.getMinecraft().options.sneakKey.matchesKey(keyCode, scanCode))) {
@@ -982,6 +1128,10 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
             }
         }
 
+        if (this.factionClaimAvailable()) {
+            this.drawFactionSelection(drawContext, cursorCoordX, cursorCoordZ);
+        }
+
         // The player marker and direction chevron must remain visible above waypoint icons.
         OpenGL.glDisable(OpenGL.GL11_GL_DEPTH_TEST);
         OpenGL.glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
@@ -1160,9 +1310,55 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
 
         super.render(drawContext, mouseX, mouseY, delta);
         this.drawFactionInfo(drawContext);
+        FactionHint.render(drawContext);
         if (this.addOverlay != null) {
             this.addOverlay.render(drawContext, mouseX, mouseY, delta);
         }
+    }
+
+    /** Draws the chunk(s) selected in claim-edit mode, either the drag preview or the final selection. */
+    private void drawFactionSelection(DrawContext drawContext, float cursorCoordX, float cursorCoordZ) {
+        int minChunkX;
+        int maxChunkX;
+        int minChunkZ;
+        int maxChunkZ;
+        if (this.factionDragging) {
+            int[] chunk = factionChunkFromMapCoords(cursorCoordX, cursorCoordZ);
+            minChunkX = Math.min(this.factionDragStartChunkX, chunk[0]);
+            maxChunkX = Math.max(this.factionDragStartChunkX, chunk[0]);
+            minChunkZ = Math.min(this.factionDragStartChunkZ, chunk[1]);
+            maxChunkZ = Math.max(this.factionDragStartChunkZ, chunk[1]);
+        } else if (this.factionSelection != null) {
+            minChunkX = this.factionSelectionMinChunkX;
+            maxChunkX = this.factionSelectionMaxChunkX;
+            minChunkZ = this.factionSelectionMinChunkZ;
+            maxChunkZ = this.factionSelectionMaxChunkZ;
+        } else {
+            return;
+        }
+        float x0 = minChunkX * 16 * this.mapToGui;
+        float x1 = (maxChunkX + 1) * 16 * this.mapToGui;
+        float z0 = minChunkZ * 16 * this.mapToGui;
+        float z1 = (maxChunkZ + 1) * 16 * this.mapToGui;
+
+        Tessellator tessellator = Tessellator.getInstance();
+        BufferBuilder vertexBuffer = tessellator.getBuffer();
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.setShader(GameRenderer::getPositionColorProgram);
+
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        this.fillClaimQuad(vertexBuffer, x0, z0, x1, z1, 0x59FFFFFF);
+        tessellator.draw();
+
+        float lineThickness = 1.5F / this.scScale;
+        int outline = 0xFFE0E0E0;
+        vertexBuffer.begin(VertexFormat.DrawMode.QUADS, VertexFormats.POSITION_COLOR);
+        this.fillClaimQuad(vertexBuffer, x0, z0, x1, z0 + lineThickness, outline);
+        this.fillClaimQuad(vertexBuffer, x0, z1 - lineThickness, x1, z1, outline);
+        this.fillClaimQuad(vertexBuffer, x0, z0, x0 + lineThickness, z1, outline);
+        this.fillClaimQuad(vertexBuffer, x1 - lineThickness, z0, x1, z1, outline);
+        tessellator.draw();
     }
 
     private boolean computeHover(float ptX, float ptZ, float cursorCoordX, float cursorCoordZ, float hoverRadius) {
@@ -1931,6 +2127,59 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         entry = new Popup.PopupEntry(I18n.translate("minimap.waypoints.share"), 2, true, true);
         entries.add(entry);
 
+        // Faction claim actions: applied to the chunk selection. The claim section
+        // is preceded by a green divider; actions that would not be able to do
+        // anything for this selection are hidden outright.
+        if (this.factionClaimAvailable()) {
+            this.claimAccessIndex = 3;
+            this.claimAccessMixed = false;
+
+            int ownClaims = 0;
+            int uniformLevel = -1;
+            boolean levelsMixed = false;
+            boolean hasWilderness = false;
+            if (this.persistentMap.world != null && this.factionSelection != null) {
+                String dimension = this.persistentMap.world.getRegistryKey().getValue().toString();
+                String localFactionId = FactionClaimStore.localFactionId();
+                for (long key : this.factionSelection) {
+                    FactionClaimStore.FactionArea owner = FactionClaimStore.ownerOf(dimension, key);
+                    if (owner == null) {
+                        hasWilderness = true;
+                        continue;
+                    }
+                    if (!owner.id.equals(localFactionId)) {
+                        // claimed by another faction: no access action allowed
+                        continue;
+                    }
+                    ownClaims++;
+                    int level = owner.accessLevelAt(dimension, key);
+                    if (uniformLevel == -1) {
+                        uniformLevel = level;
+                    } else if (uniformLevel != level) {
+                        levelsMixed = true;
+                    }
+                }
+            } else {
+                // no selection: allow claim
+                hasWilderness = true;
+            }
+            this.claimAccessMixed = levelsMixed;
+            if (!levelsMixed && uniformLevel >= 0) {
+                this.claimAccessIndex = uniformLevel;
+            }
+
+            int firstDivider = 0xFF55FF55;
+            if (hasWilderness) {
+                entries.add(new Popup.PopupEntry("Claim", 100, true, true, firstDivider));
+                firstDivider = 0;
+            }
+            if (ownClaims > 0) {
+                entries.add(new Popup.PopupEntry("Remove Claim", 101, true, true, firstDivider));
+                firstDivider = 0;
+                entries.add(new Popup.PopupEntry(this.claimAccessLabel(), 102, false, true, firstDivider));
+            }
+        }
+
         this.createPopup(x, y, directX, directY, entries);
     }
 
@@ -1985,6 +2234,28 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
         this.addClicked = false;
         double dimensionScale = VoxelConstants.getPlayer().getWorld().getDimension().coordinateScale();
         switch (action) {
+            case 100 -> {
+                // Claim every selected chunk
+                if (this.factionSelection != null) {
+                    this.sendFactionAction("claim", this.factionSelection, null);
+                }
+                this.clearFactionSelection();
+            }
+            case 101 -> {
+                // Remove claim on every selected chunk
+                if (this.factionSelection != null) {
+                    this.sendFactionAction("unclaim", this.factionSelection, null);
+                }
+                this.clearFactionSelection();
+            }
+            case 102 -> {
+                // Cycle the access level without closing the popup
+                this.cycleFactionAccessLevel();
+                popup.setEntryName(102, this.claimAccessLabel());
+                if (this.factionSelection != null) {
+                    this.sendFactionAction("access", this.factionSelection, this.claimAccessLevelName());
+                }
+            }
             case 0 -> {
                 if (hovered != null) {
                     x = hovered.getX();
@@ -2052,7 +2323,7 @@ public class GuiPersistentMap extends PopupGuiScreen implements IGuiWaypoints {
                     this.waypointManager.deleteWaypoint(hovered);
                 }
             }
-            default -> VoxelConstants.getLogger().warn("unimplemented command");
+            default -> VoxelConstants.getLogger().warn("unimplemented command " + action);
         }
 
     }
